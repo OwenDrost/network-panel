@@ -321,22 +321,28 @@ func periodicReconcile(addr, secret, scheme string) {
 }
 
 func reconcile(addr, secret, scheme string) {
-    // read local gost.json service names
+    // read local gost.json service names and panel-managed flag
     present := map[string]struct{}{}
+    managed := map[string]bool{}
     if b, err := os.ReadFile(resolveGostConfigPathForRead()); err == nil {
-		var m map[string]any
-		if json.Unmarshal(b, &m) == nil {
-			if arr, ok := m["services"].([]any); ok {
-				for _, it := range arr {
-					if obj, ok := it.(map[string]any); ok {
-						if n, ok := obj["name"].(string); ok && n != "" {
-							present[n] = struct{}{}
-						}
-					}
-				}
-			}
-		}
-	}
+        var m map[string]any
+        if json.Unmarshal(b, &m) == nil {
+            if arr, ok := m["services"].([]any); ok {
+                for _, it := range arr {
+                    if obj, ok := it.(map[string]any); ok {
+                        if n, ok := obj["name"].(string); ok && n != "" {
+                            present[n] = struct{}{}
+                            if meta, _ := obj["metadata"].(map[string]any); meta != nil {
+                                if v, ok2 := meta["managedBy"].(string); ok2 && v == "flux-panel" {
+                                    managed[n] = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 	//addr := getenv("ADDR", "")
 	//secret := getenv("SECRET", "")
 	//scheme := getenv("SCHEME", "ws")
@@ -375,19 +381,21 @@ func reconcile(addr, secret, scheme string) {
 			}
 		}
 	}
-	// compute extras if STRICT_RECONCILE=true
-	extras := make([]string, 0)
-	strict := true
-	if v := strings.ToLower(getenv("STRICT_RECONCILE", "true")); v == "false" || v == "0" {
-		strict = false
-	}
-	if strict {
-		for n := range present {
-			if _, ok := desiredNames[n]; !ok {
-				extras = append(extras, n)
-			}
-		}
-	}
+    // compute extras if STRICT_RECONCILE=true (only for panel-managed services)
+    extras := make([]string, 0)
+    strict := false
+    if v := strings.ToLower(getenv("STRICT_RECONCILE", "false")); v == "true" || v == "1" {
+        strict = true
+    }
+    if strict {
+        for n := range present {
+            if _, ok := desiredNames[n]; !ok {
+                if managed[n] {
+                    extras = append(extras, n)
+                }
+            }
+        }
+    }
 	if len(missing) == 0 && len(extras) == 0 {
 		log.Printf("{\"event\":\"reconcile_ok\",\"missing\":0,\"extras\":0}")
 		return

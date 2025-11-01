@@ -73,7 +73,8 @@ func desiredServices(nodeID int64) []map[string]any {
                 services = append(services, svc)
             }
             if r.InNodeID == nodeID && r.OutPort != nil {
-                target := getOutNodeIP(model.Tunnel{OutIP: r.OutIP, OutNodeID: r.OutNodeID}) + ":" + itoa(*r.OutPort)
+                ip := getOutNodeIP(model.Tunnel{OutIP: r.OutIP, OutNodeID: r.OutNodeID})
+                target := safeHostPort(ip, *r.OutPort)
                 svc := buildServiceConfig(name, r.InPort, target, iface)
                 services = append(services, svc)
             }

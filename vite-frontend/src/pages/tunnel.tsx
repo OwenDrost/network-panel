@@ -120,6 +120,7 @@ export default function TunnelPage() {
   const [exitLimiter, setExitLimiter] = useState<string>("");
   const [exitRLimiter, setExitRLimiter] = useState<string>("");
   const [exitDeployed, setExitDeployed] = useState<string>("");
+  const [exitMetaItems, setExitMetaItems] = useState<Array<{id:number, key:string, value:string}>>([]);
 
   useEffect(() => {
     loadData();
@@ -213,7 +214,7 @@ export default function TunnelPage() {
       status: 1
     });
     setErrors({});
-    setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed("");
+    setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed(""); setExitMetaItems([]);
     setModalOpen(true);
   };
 
@@ -235,7 +236,7 @@ export default function TunnelPage() {
       status: tunnel.status
     });
     setErrors({});
-    setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed("");
+    setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed(""); setExitMetaItems([]);
     setModalOpen(true);
   };
 
@@ -295,7 +296,9 @@ export default function TunnelPage() {
         // 若为隧道转发且选择了出口节点，并填了端口/密码，则在出口节点上创建SS服务
         if (form.type === 2 && form.outNodeId && exitPort && exitPassword) {
           try {
-            const r = await setExitNode({ nodeId: form.outNodeId, port: exitPort, password: exitPassword, method: exitMethod } as any);
+            const metadata: any = {};
+            exitMetaItems.forEach(it => { if (it.key && it.value) metadata[it.key] = it.value });
+            const r = await setExitNode({ nodeId: form.outNodeId, port: exitPort, password: exitPassword, method: exitMethod, observer: exitObserver, limiter: exitLimiter, rlimiter: exitRLimiter, metadata } as any);
             if (r.code === 0) toast.success('出口SS服务已创建/更新'); else toast.error(r.msg || '出口SS创建失败');
           } catch {
             toast.error('出口SS创建失败');
@@ -934,6 +937,20 @@ export default function TunnelPage() {
                         {exitDeployed && (
                           <Alert color="success" variant="flat" title="出口SS状态" description={exitDeployed} />
                         )}
+                        <Divider />
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-default-600">handler.metadata</span>
+                          <Button size="sm" variant="flat" onPress={()=>setExitMetaItems((prev: Array<{id:number;key:string;value:string}>)=>[...prev,{id:Date.now(), key:'', value:''}])}>添加</Button>
+                          </div>
+                          {exitMetaItems.map((it: {id:number;key:string;value:string}) => (
+                            <div key={it.id} className="grid grid-cols-5 gap-2 items-center">
+                              <Input className="col-span-2" placeholder="key" value={it.key} onChange={(e)=>setExitMetaItems((prev: Array<{id:number;key:string;value:string}>)=>prev.map((x:any)=>x.id===it.id?{...x,key:(e.target as any).value}:x))} />
+                              <Input className="col-span-3" placeholder="value" value={it.value} onChange={(e)=>setExitMetaItems((prev: Array<{id:number;key:string;value:string}>)=>prev.map((x:any)=>x.id===it.id?{...x,value:(e.target as any).value}:x))} />
+                              <Button size="sm" variant="light" color="danger" onPress={()=>setExitMetaItems((prev: Array<{id:number;key:string;value:string}>)=>prev.filter((x:any)=>x.id!==it.id))}>删除</Button>
+                            </div>
+                          ))}
+                        </div>
                       </>
                     )}
 

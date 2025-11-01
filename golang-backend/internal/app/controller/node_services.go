@@ -19,9 +19,6 @@ func NodeQueryServices(c *gin.Context) {
         "requestId": RandUUID(),
         "filter": p.Filter,
     }
-    // reuse Diagnose waiters channel for generic queries
-    res, ok := RequestDiagnose(p.NodeID, map[string]interface{}{"requestId": req["requestId"]}, 1*time.Millisecond)
-    _ = res; _ = ok // no-op to satisfy unused; we'll send explicit WS below
     // send explicit QueryServices command
     if err := sendWSCommand(p.NodeID, "QueryServices", req); err != nil {
         c.JSON(http.StatusOK, response.ErrMsg("节点未连接: "+err.Error()))
@@ -43,4 +40,3 @@ func NodeQueryServices(c *gin.Context) {
         c.JSON(http.StatusOK, response.ErrMsg("查询超时"))
     }
 }
-

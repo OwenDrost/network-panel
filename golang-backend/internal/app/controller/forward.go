@@ -562,9 +562,12 @@ func buildServiceConfig(name string, listenPort int, target string, iface *strin
             }},
         },
     }
+    // attach panel-managed marker and optional interface
+    meta := map[string]any{"managedBy": "flux-panel"}
     if iface != nil && *iface != "" {
-        svc["metadata"] = map[string]any{"interface": *iface}
+        meta["interface"] = *iface
     }
+    svc["metadata"] = meta
     return svc
 }
 
@@ -581,13 +584,19 @@ func buildSSService(name string, listenPort int, password string, method string,
         },
     }
     // optional extras: observer, limiter, rlimiter, metadata
+    // base metadata includes panel marker
+    baseMeta := map[string]any{"managedBy": "flux-panel"}
     if len(opts) > 0 && opts[0] != nil {
         o := opts[0]
         if v, ok := o["observer"].(string); ok && v != "" { svc["observer"] = v }
         if v, ok := o["limiter"].(string); ok && v != "" { svc["limiter"] = v }
         if v, ok := o["rlimiter"].(string); ok && v != "" { svc["rlimiter"] = v }
-        if v, ok := o["metadata"].(map[string]any); ok && v != nil { svc["metadata"] = v }
+        if v, ok := o["metadata"].(map[string]any); ok && v != nil {
+            // merge and preserve managedBy
+            for k, val := range v { baseMeta[k] = val }
+        }
     }
+    svc["metadata"] = baseMeta
     return svc
 }
 

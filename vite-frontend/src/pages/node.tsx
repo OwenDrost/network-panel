@@ -9,6 +9,7 @@ import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
 import { Divider } from "@heroui/divider";
+import { queryNodeServices } from "@/api";
 import toast from 'react-hot-toast';
 import axios from 'axios';
 
@@ -42,6 +43,8 @@ interface Node {
     uptime: number;
   } | null;
   copyLoading?: boolean;
+  ssStatus?: string;
+  ssLoading?: boolean;
 }
 
 interface NodeForm {
@@ -83,6 +86,7 @@ export default function NodePage() {
   const [exitObserver, setExitObserver] = useState<string>("console");
   const [exitLimiter, setExitLimiter] = useState<string>("");
   const [exitRLimiter, setExitRLimiter] = useState<string>("");
+  const [exitMetaItems, setExitMetaItems] = useState<Array<{id:number, key:string, value:string}>>([]);
   
   // 安装命令相关状态
   const [installCommandModal, setInstallCommandModal] = useState(false);
@@ -137,6 +141,24 @@ export default function NodePage() {
     setExitModalOpen(true);
   };
 
+  // 刷新节点服务状态（仅查询 ss）
+  const refreshServices = async (node: Node) => {
+    setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ssLoading: true } : n));
+    try {
+      const res = await queryNodeServices({ nodeId: node.id, filter: 'ss' });
+      if (res.code === 0 && Array.isArray(res.data)) {
+        const items = res.data as any[];
+        const ss = items.find(x => x && x.handler === 'ss');
+        const desc = ss ? `SS: 端口 ${ss.port || ss.addr || '-'}，监听 ${ss.listening ? '是' : '否'}` : 'SS: 未部署';
+        setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ssStatus: desc, ssLoading: false } : n));
+      } else {
+        setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ssStatus: 'SS: 查询失败', ssLoading: false } : n));
+      }
+    } catch {
+      setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ssStatus: 'SS: 查询失败', ssLoading: false } : n));
+    }
+  };
+
   // 提交出口服务设置
   const submitExit = async () => {
     if (!exitNodeId) { toast.error('无效的节点'); return; }
@@ -144,8 +166,10 @@ export default function NodePage() {
     if (!exitPassword) { toast.error('请填写密码'); return; }
     setExitSubmitting(true);
     try {
+      const metadata: any = {};
+      exitMetaItems.forEach((it: {key:string; value:string}) => { if (it.key && it.value) metadata[it.key] = it.value });
       const res = await setExitNode({ nodeId: exitNodeId, port: exitPort, password: exitPassword, method: exitMethod, 
-        observer: exitObserver, limiter: exitLimiter, rlimiter: exitRLimiter } as any);
+        observer: exitObserver, limiter: exitLimiter, rlimiter: exitRLimiter, metadata } as any);
       if (res.code === 0) { toast.success('出口服务已创建/更新'); setExitModalOpen(false); }
       else { toast.error(res.msg || '操作失败'); }
     } catch (e) {
@@ -699,6 +723,15 @@ export default function NodePage() {
                       <span className="text-default-600">版本</span>
                       <span className="text-xs">{node.version || '未知'}</span>
                     </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-default-600">服务</span>
+                      <span className="text-xs flex items-center gap-2">
+                        {node.ssStatus ? node.ssStatus : '-'}
+                        <Button size="sm" variant="light" onPress={() => refreshServices(node)} isLoading={node.ssLoading}>
+                          刷新
+                        </Button>
+                      </span>
+                    </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-default-600">开机时间</span>
                       <span className="text-xs">
@@ -820,6 +853,16 @@ export default function NodePage() {
                         className="flex-1 min-h-8"
                       >
                         出口
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color="secondary"
+                        onPress={() => refreshServices(node)}
+                        isLoading={node.ssLoading}
+                        className="flex-1 min-h-8"
+                      >
+                        服务
                       </Button>
                       <Button
                         size="sm"
@@ -965,6 +1008,20 @@ export default function NodePage() {
                     <Input label="观察器(observer)" value={exitObserver} onChange={(e:any)=>setExitObserver(e.target.value)} description="默认 console，可留空" />
                     <Input label="限速(limiter)" value={exitLimiter} onChange={(e:any)=>setExitLimiter(e.target.value)} description="可选，需在节点注册对应限速器" />
                     <Input label="连接限速(rlimiter)" value={exitRLimiter} onChange={(e:any)=>setExitRLimiter(e.target.value)} description="可选，需在节点注册对应限速器" />
+                    <Divider />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-default-600">handler.metadata</span>
+                        <Button size="sm" variant="flat" onPress={()=>setExitMetaItems(prev=>[...prev,{id:Date.now(), key:'', value:''}])}>添加</Button>
+                      </div>
+                      {exitMetaItems.map((it: {id:number; key:string; value:string}) => (
+                        <div key={it.id} className="grid grid-cols-5 gap-2 items-center">
+                          <Input className="col-span-2" placeholder="key" value={it.key} onChange={(e:any)=>setExitMetaItems((prev: Array<{id:number; key:string; value:string}>)=>prev.map((x:any)=>x.id===it.id?{...x,key:e.target.value}:x))} />
+                          <Input className="col-span-3" placeholder="value" value={it.value} onChange={(e:any)=>setExitMetaItems((prev: Array<{id:number; key:string; value:string}>)=>prev.map((x:any)=>x.id===it.id?{...x,value:e.target.value}:x))} />
+                          <Button size="sm" variant="light" color="danger" onPress={()=>setExitMetaItems((prev: Array<{id:number; key:string; value:string}>)=>prev.filter((x:any)=>x.id!==it.id))}>删除</Button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </ModalBody>
                 <ModalFooter>
