@@ -33,6 +33,10 @@ export const checkNodeStatus = (nodeId?: number) => {
   const params = nodeId ? { nodeId } : {};
   return Network.post("/node/check-status", params);
 };
+// 设置出口节点（在节点上创建/更新 SS 服务）
+export const setExitNode = (data: { nodeId: number; port: number; password: string; method?: string }) => Network.post("/node/set-exit", data);
+// 查询节点上的服务
+export const queryNodeServices = (data: { nodeId: number; filter?: string }) => Network.post("/node/query-services", data);
 
 // 隧道CRUD操作 - 全部使用POST请求
 export const createTunnel = (data: any) => Network.post("/tunnel/create", data);
@@ -41,6 +45,7 @@ export const getTunnelById = (id: number) => Network.post("/tunnel/get", { id })
 export const updateTunnel = (data: any) => Network.post("/tunnel/update", data);
 export const deleteTunnel = (id: number) => Network.post("/tunnel/delete", { id });
 export const diagnoseTunnel = (tunnelId: number) => Network.post("/tunnel/diagnose", { tunnelId });
+export const diagnoseTunnelStep = (tunnelId: number, step: string) => Network.post("/tunnel/diagnose-step", { tunnelId, step });
 
 // 用户隧道权限管理操作 - 全部使用POST请求
 export const assignUserTunnel = (data: any) => Network.post("/tunnel/user/assign", data);
@@ -62,6 +67,7 @@ export const resumeForwardService = (forwardId: number) => Network.post("/forwar
 
 // 转发诊断操作
 export const diagnoseForward = (forwardId: number) => Network.post("/forward/diagnose", { forwardId });
+export const diagnoseForwardStep = (forwardId: number, step: string) => Network.post("/forward/diagnose-step", { forwardId, step });
 
 // 转发排序操作
 export const updateForwardOrder = (data: { forwards: Array<{ id: number; inx: number }> }) => Network.post("/forward/update-order", data);
@@ -89,3 +95,7 @@ export const updateConfig = (name: string, value: string) => Network.post("/conf
 export const checkCaptcha = () => Network.post("/captcha/check");
 export const generateCaptcha = () => Network.post(`/captcha/generate`);
 export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data); 
+
+// Agent & Node diagnostics utilities
+export const agentReconcileNode = (nodeId: number) => Network.post("/agent/reconcile-node", { nodeId });
+export const getNodeConnections = () => Network.get("/node/connections");

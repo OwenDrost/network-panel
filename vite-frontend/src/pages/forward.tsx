@@ -41,7 +41,7 @@ import {
   userTunnel, 
   pauseForwardService,
   resumeForwardService,
-  diagnoseForward,
+  diagnoseForwardStep,
   updateForwardOrder
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
@@ -103,6 +103,9 @@ interface DiagnosisResult {
     message?: string;
     averageTime?: number;
     packetLoss?: number;
+    reqId?: string;
+    // iperf3 bandwidth Mbps, if present
+    bandwidthMbps?: number;
   }>;
 }
 
@@ -632,40 +635,25 @@ export default function ForwardPage() {
     setDiagnosisLoading(true);
     setDiagnosisResult(null);
 
+    // 流式增量：依次入口->出口、节点->远端、iperf3
+    setDiagnosisResult({ forwardName: forward.name, timestamp: Date.now(), results: [] });
+    const append = (item: any) => {
+      setDiagnosisResult(prev => prev ? ({ ...prev, results: [...prev.results, item] }) : prev);
+    };
     try {
-      const response = await diagnoseForward(forward.id);
-      if (response.code === 0) {
-        setDiagnosisResult(response.data);
-      } else {
-        toast.error(response.msg || '诊断失败');
-        setDiagnosisResult({
-          forwardName: forward.name,
-          timestamp: Date.now(),
-          results: [{
-            success: false,
-            description: '诊断失败',
-            nodeName: '-',
-            nodeId: '-',
-            targetIp: forward.remoteAddr.split(',')[0] || '-',
-            message: response.msg || '诊断过程中发生错误'
-          }]
-        });
+      // 1) 入口到出口（仅隧道转发）
+      if (forward.tunnelName && forward.tunnelId) {
+        const r1 = await diagnoseForwardStep(forward.id, 'entryExit');
+        if (r1.code === 0) append(r1.data); else append({ success: false, description: '入口到出口连通性', nodeName: '-', nodeId: '-', targetIp: '-', message: r1.msg || '失败' });
       }
-    } catch (error) {
-      console.error('诊断失败:', error);
-      toast.error('网络错误，请重试');
-      setDiagnosisResult({
-        forwardName: forward.name,
-        timestamp: Date.now(),
-        results: [{
-          success: false,
-          description: '网络错误',
-          nodeName: '-',
-          nodeId: '-',
-          targetIp: forward.remoteAddr.split(',')[0] || '-',
-          message: '无法连接到服务器'
-        }]
-      });
+      // 2) 节点到远端（tcp）
+      const r2 = await diagnoseForwardStep(forward.id, 'nodeRemote');
+      if (r2.code === 0) append(r2.data); else append({ success: false, description: '节点到远端连通性', nodeName: '-', nodeId: '-', targetIp: '-', message: r2.msg || '失败' });
+      // 3) iperf3 反向带宽（仅隧道转发）
+      const r3 = await diagnoseForwardStep(forward.id, 'iperf3');
+      if (r3.code === 0) append(r3.data); else append({ success: false, description: 'iperf3 反向带宽测试', nodeName: '-', nodeId: '-', targetIp: '-', message: r3.msg || '未支持或失败' });
+    } catch (e) {
+      toast.error('诊断失败');
     } finally {
       setDiagnosisLoading(false);
     }
@@ -2078,32 +2066,55 @@ export default function ForwardPage() {
                             <CardBody className="pt-0">
                               {result.success ? (
                                 <div className="space-y-3">
-                                  <div className="grid grid-cols-3 gap-4">
-                                    <div className="text-center">
-                                      <div className="text-2xl font-bold text-primary">{result.averageTime?.toFixed(0)}</div>
-                                      <div className="text-small text-default-500">平均延迟(ms)</div>
-                                    </div>
-                                    <div className="text-center">
-                                      <div className="text-2xl font-bold text-warning">{result.packetLoss?.toFixed(1)}</div>
-                                      <div className="text-small text-default-500">丢包率(%)</div>
-                                    </div>
-                                    <div className="text-center">
-                                      {quality && (
-                                        <>
-                                          <Chip color={quality.color as any} variant="flat" size="lg">
-                                            {quality.text}
-                                          </Chip>
-                                          <div className="text-small text-default-500 mt-1">连接质量</div>
-                                        </>
-                                      )}
-                                    </div>
-                                  </div>
+                                  {(() => {
+                                    const isIperf3 = typeof result.description === 'string' && result.description.toLowerCase().includes('iperf3');
+                                    if (isIperf3) {
+                                      const bw = ((): number | undefined => {
+                                        const v: any = (result as any).bandwidthMbps;
+                                        const n = typeof v === 'string' ? Number(v) : v;
+                                        return Number.isFinite(n) ? Number(n) : undefined;
+                                      })();
+                                      return (
+                                        <div className="grid grid-cols-1 gap-4">
+                                          <div className="text-center">
+                                            <div className="text-2xl font-bold text-success">{bw !== undefined ? bw.toFixed(2) : '-'}</div>
+                                            <div className="text-small text-default-500">带宽(Mbps)</div>
+                                          </div>
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div className="grid grid-cols-3 gap-4">
+                                        <div className="text-center">
+                                          <div className="text-2xl font-bold text-primary">{result.averageTime?.toFixed(0)}</div>
+                                          <div className="text-small text-default-500">平均延迟(ms)</div>
+                                        </div>
+                                        <div className="text-center">
+                                          <div className="text-2xl font-bold text-warning">{result.packetLoss?.toFixed(1)}</div>
+                                          <div className="text-small text-default-500">丢包率(%)</div>
+                                        </div>
+                                        <div className="text-center">
+                                          {quality && (
+                                            <>
+                                              <Chip color={quality.color as any} variant="flat" size="lg">
+                                                {quality.text}
+                                              </Chip>
+                                              <div className="text-small text-default-500 mt-1">连接质量</div>
+                                            </>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
                                   <div className="text-small text-default-500 flex items-center gap-1">
                                     <span className="flex-shrink-0">目标地址:</span>
                                     <code className="font-mono truncate min-w-0" title={`${result.targetIp}${result.targetPort ? ':' + result.targetPort : ''}`}>
                                       {result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}
                                     </code>
                                   </div>
+                                  {result.reqId && (
+                                    <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="space-y-2">
@@ -2113,6 +2124,9 @@ export default function ForwardPage() {
                                       {result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}
                                     </code>
                                   </div>
+                                  {result.reqId && (
+                                    <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
+                                  )}
                                   <Alert
                                     color="danger"
                                     variant="flat"

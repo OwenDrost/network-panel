@@ -7,10 +7,9 @@ import { Provider } from "./provider.tsx";
 import "@/styles/globals.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <BrowserRouter>
+  <BrowserRouter basename="/app">
     <Provider>
       <App />
     </Provider>
   </BrowserRouter>
 );
-

@@ -17,8 +17,9 @@ import {
   updateTunnel, 
   deleteTunnel,
   getNodeList,
-  diagnoseTunnel
+  diagnoseTunnelStep
 } from "@/api";
+import { setExitNode } from "@/api";
 
 interface Tunnel {
   id: number;
@@ -73,6 +74,7 @@ interface DiagnosisResult {
     message?: string;
     averageTime?: number;
     packetLoss?: number;
+    reqId?: string;
   }>;
 }
 
@@ -110,6 +112,14 @@ export default function TunnelPage() {
   
   // 表单验证错误
   const [errors, setErrors] = useState<{[key: string]: string}>({});
+  // 出口服务（SS）附加项
+  const [exitPort, setExitPort] = useState<number | null>(null);
+  const [exitPassword, setExitPassword] = useState<string>("");
+  const [exitMethod, setExitMethod] = useState<string>("AEAD_CHACHA20_POLY1305");
+  const [exitObserver, setExitObserver] = useState<string>("console");
+  const [exitLimiter, setExitLimiter] = useState<string>("");
+  const [exitRLimiter, setExitRLimiter] = useState<string>("");
+  const [exitDeployed, setExitDeployed] = useState<string>("");
 
   useEffect(() => {
     loadData();
@@ -203,6 +213,7 @@ export default function TunnelPage() {
       status: 1
     });
     setErrors({});
+    setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed("");
     setModalOpen(true);
   };
 
@@ -224,6 +235,7 @@ export default function TunnelPage() {
       status: tunnel.status
     });
     setErrors({});
+    setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed("");
     setModalOpen(true);
   };
 
@@ -263,6 +275,7 @@ export default function TunnelPage() {
       outNodeId: type === 1 ? null : prev.outNodeId,
       protocol: type === 1 ? 'tls' : prev.protocol
     }));
+    setExitDeployed("");
   };
 
   // 提交表单
@@ -279,6 +292,15 @@ export default function TunnelPage() {
         
       if (response.code === 0) {
         toast.success(isEdit ? '更新成功' : '创建成功');
+        // 若为隧道转发且选择了出口节点，并填了端口/密码，则在出口节点上创建SS服务
+        if (form.type === 2 && form.outNodeId && exitPort && exitPassword) {
+          try {
+            const r = await setExitNode({ nodeId: form.outNodeId, port: exitPort, password: exitPassword, method: exitMethod } as any);
+            if (r.code === 0) toast.success('出口SS服务已创建/更新'); else toast.error(r.msg || '出口SS创建失败');
+          } catch {
+            toast.error('出口SS创建失败');
+          }
+        }
         setModalOpen(false);
         loadData();
       } else {
@@ -297,46 +319,41 @@ export default function TunnelPage() {
     setCurrentDiagnosisTunnel(tunnel);
     setDiagnosisModalOpen(true);
     setDiagnosisLoading(true);
-    setDiagnosisResult(null);
+    setDiagnosisResult({
+      tunnelName: tunnel.name,
+      tunnelType: tunnel.type === 1 ? '端口转发' : '隧道转发',
+      timestamp: Date.now(),
+      results: []
+    });
+
+    // 流式增量：依次请求三个步骤
+    const append = (item: any) => {
+      setDiagnosisResult(prev => prev ? ({
+        ...prev,
+        results: [...prev.results, item]
+      }) : prev);
+    };
 
     try {
-      const response = await diagnoseTunnel(tunnel.id);
-      if (response.code === 0) {
-        setDiagnosisResult(response.data);
-      } else {
-        toast.error(response.msg || '诊断失败');
-        setDiagnosisResult({
-          tunnelName: tunnel.name,
-          tunnelType: tunnel.type === 1 ? '端口转发' : '隧道转发',
-          timestamp: Date.now(),
-          results: [{
-            success: false,
-            description: '诊断失败',
-            nodeName: '-',
-            nodeId: '-',
-            targetIp: '-',
-            targetPort: 443,
-            message: response.msg || '诊断过程中发生错误'
-          }]
-        });
+      // 1) 入口到出口（ICMP）仅隧道转发
+      if (tunnel.type === 2) {
+        const r2 = await diagnoseTunnelStep(tunnel.id, 'entryExit');
+        if (r2.code === 0) append(r2.data); else append({ success: false, description: '入口到出口连通性', nodeName: '-', nodeId: '-', targetIp: '-', message: r2.msg || '失败' });
       }
-    } catch (error) {
-      console.error('诊断失败:', error);
-      toast.error('网络错误，请重试');
-      setDiagnosisResult({
-        tunnelName: tunnel.name,
-        tunnelType: tunnel.type === 1 ? '端口转发' : '隧道转发',
-        timestamp: Date.now(),
-        results: [{
-          success: false,
-          description: '网络错误',
-          nodeName: '-',
-          nodeId: '-',
-          targetIp: '-',
-          targetPort: 443,
-          message: '无法连接到服务器'
-        }]
-      });
+
+      // 2) 出口到 1.1.1.1（ICMP）仅隧道转发
+      if (tunnel.type === 2) {
+        const r3 = await diagnoseTunnelStep(tunnel.id, 'exitPublic');
+        if (r3.code === 0) append(r3.data); else append({ success: false, description: '出口外网连通性', nodeName: '-', nodeId: '-', targetIp: '1.1.1.1', message: r3.msg || '失败' });
+      }
+
+      // 3) iperf3 反向带宽测试（仅隧道转发）
+      if (tunnel.type === 2) {
+        const r4 = await diagnoseTunnelStep(tunnel.id, 'iperf3');
+        if (r4.code === 0) append(r4.data); else append({ success: false, description: 'iperf3 反向带宽测试', nodeName: '-', nodeId: '-', targetIp: '-', message: r4.msg || '未支持或失败' });
+      }
+    } catch (e) {
+      toast.error('诊断失败');
     } finally {
       setDiagnosisLoading(false);
     }
@@ -651,6 +668,30 @@ export default function TunnelPage() {
                       <SelectItem key="2">隧道转发</SelectItem>
                     </Select>
 
+                    {form.type === 2 && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <Input 
+                          label="出口端口(SS)" 
+                          type="number" 
+                          placeholder="例如 10086" 
+                          value={exitPort ? String(exitPort) : ''} 
+                          onChange={(e) => setExitPort(Number((e.target as any).value))} 
+                        />
+                        <Input 
+                          label="出口密码(SS)" 
+                          placeholder="不少于6位" 
+                          value={exitPassword} 
+                          onChange={(e) => setExitPassword((e.target as any).value)} 
+                        />
+                        <Input 
+                          label="加密方法" 
+                          value={exitMethod} 
+                          onChange={(e) => setExitMethod((e.target as any).value)} 
+                          description="默认 AEAD_CHACHA20_POLY1305" 
+                        />
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <Select
                         label="流量计算"
@@ -726,6 +767,30 @@ export default function TunnelPage() {
                         </SelectItem>
                       ))}
                     </Select>
+
+                    {form.type === 2 && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <Input 
+                          label="出口端口(SS)" 
+                          type="number" 
+                          placeholder="例如 10086" 
+                          value={exitPort ? String(exitPort) : ''} 
+                          onChange={(e) => setExitPort(Number((e.target as any).value))} 
+                        />
+                        <Input 
+                          label="出口密码(SS)" 
+                          placeholder="不少于6位" 
+                          value={exitPassword} 
+                          onChange={(e) => setExitPassword((e.target as any).value)} 
+                        />
+                        <Input 
+                          label="加密方法" 
+                          value={exitMethod} 
+                          onChange={(e) => setExitMethod((e.target as any).value)} 
+                          description="默认 AEAD_CHACHA20_POLY1305" 
+                        />
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <Input
@@ -808,6 +873,25 @@ export default function TunnelPage() {
                             const selectedKey = Array.from(keys)[0] as string;
                             if (selectedKey) {
                               setForm(prev => ({ ...prev, outNodeId: parseInt(selectedKey) }));
+                              // 清空状态并尝试查询该节点是否已有SS服务
+                              setExitDeployed("");
+                              const nid = parseInt(selectedKey);
+                              // 动态导入API以避免循环依赖（已顶层导入，此处直接使用也可）
+                              import("@/api").then(({ queryNodeServices }) => {
+                                queryNodeServices({ nodeId: nid, filter: 'ss' }).then((res:any)=>{
+                                  if (res.code === 0 && Array.isArray(res.data)) {
+                                    const items = res.data as any[];
+                                    const ss = items.find(x => x && x.handler === 'ss');
+                                    if (ss) {
+                                      const desc = `已部署: 端口 ${ss.port || ss.addr || '-'}，监听 ${ss.listening ? '是' : '否'}`;
+                                      setExitDeployed(desc);
+                                      if (!exitPort && ss.port) setExitPort(Number(ss.port));
+                                    } else {
+                                      setExitDeployed('未部署');
+                                    }
+                                  }
+                                }).catch(()=>{});
+                              });
                             }
                           }}
                           isInvalid={!!errors.outNodeId}
@@ -840,6 +924,16 @@ export default function TunnelPage() {
                             </SelectItem>
                           ))}
                         </Select>
+
+                        {/* 出口SS高级选项与状态 */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <Input label="观察器(observer)" value={exitObserver} onChange={(e)=>setExitObserver((e.target as any).value)} description="默认 console，可留空" />
+                          <Input label="限速(limiter)" value={exitLimiter} onChange={(e)=>setExitLimiter((e.target as any).value)} description="可选，需在节点注册对应限速器" />
+                          <Input label="连接限速(rlimiter)" value={exitRLimiter} onChange={(e)=>setExitRLimiter((e.target as any).value)} description="可选，需在节点注册对应限速器" />
+                        </div>
+                        {exitDeployed && (
+                          <Alert color="success" variant="flat" title="出口SS状态" description={exitDeployed} />
+                        )}
                       </>
                     )}
 
@@ -1001,12 +1095,18 @@ export default function TunnelPage() {
                                   <div className="text-small text-default-500">
                                     目标地址: <code className="font-mono">{result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}</code>
                                   </div>
+                                  {result.reqId && (
+                                    <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="space-y-2">
                                   <div className="text-small text-default-500">
                                     目标地址: <code className="font-mono">{result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}</code>
                                   </div>
+                                  {result.reqId && (
+                                    <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
+                                  )}
                                   <Alert
                                     color="danger"
                                     variant="flat"

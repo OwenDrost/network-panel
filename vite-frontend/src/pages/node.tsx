@@ -8,6 +8,7 @@ import { Chip } from "@heroui/chip";
 import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
+import { Divider } from "@heroui/divider";
 import toast from 'react-hot-toast';
 import axios from 'axios';
 
@@ -17,7 +18,8 @@ import {
   getNodeList, 
   updateNode, 
   deleteNode,
-  getNodeInstallCommand
+  getNodeInstallCommand,
+  setExitNode
 } from "@/api";
 
 interface Node {
@@ -70,6 +72,17 @@ export default function NodePage() {
     portEnd: 65535
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // 出口服务设置
+  const [exitModalOpen, setExitModalOpen] = useState(false);
+  const [exitNodeId, setExitNodeId] = useState<number | null>(null);
+  const [exitPort, setExitPort] = useState<number>(10000);
+  const [exitPassword, setExitPassword] = useState<string>("");
+  const [exitMethod, setExitMethod] = useState<string>("AEAD_CHACHA20_POLY1305");
+  const [exitSubmitting, setExitSubmitting] = useState(false);
+  const [exitObserver, setExitObserver] = useState<string>("console");
+  const [exitLimiter, setExitLimiter] = useState<string>("");
+  const [exitRLimiter, setExitRLimiter] = useState<string>("");
   
   // 安装命令相关状态
   const [installCommandModal, setInstallCommandModal] = useState(false);
@@ -109,6 +122,36 @@ export default function NodePage() {
       toast.error('网络错误，请重试');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 打开设置出口服务对话框
+  const openExitModal = (node: Node) => {
+    setExitNodeId(node.id);
+    setExitPort(node.portSta || 10000);
+    setExitPassword("");
+    setExitMethod("AEAD_CHACHA20_POLY1305");
+    setExitObserver("console");
+    setExitLimiter("");
+    setExitRLimiter("");
+    setExitModalOpen(true);
+  };
+
+  // 提交出口服务设置
+  const submitExit = async () => {
+    if (!exitNodeId) { toast.error('无效的节点'); return; }
+    if (!exitPort || exitPort < 1 || exitPort > 65535) { toast.error('端口无效'); return; }
+    if (!exitPassword) { toast.error('请填写密码'); return; }
+    setExitSubmitting(true);
+    try {
+      const res = await setExitNode({ nodeId: exitNodeId, port: exitPort, password: exitPassword, method: exitMethod, 
+        observer: exitObserver, limiter: exitLimiter, rlimiter: exitRLimiter } as any);
+      if (res.code === 0) { toast.success('出口服务已创建/更新'); setExitModalOpen(false); }
+      else { toast.error(res.msg || '操作失败'); }
+    } catch (e) {
+      toast.error('网络错误');
+    } finally {
+      setExitSubmitting(false);
     }
   };
 
@@ -772,6 +815,15 @@ export default function NodePage() {
                       <Button
                         size="sm"
                         variant="flat"
+                        color="warning"
+                        onPress={() => openExitModal(node)}
+                        className="flex-1 min-h-8"
+                      >
+                        出口
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="flat"
                         color="primary"
                         onPress={() => handleEdit(node)}
                         className="flex-1 min-h-8"
@@ -895,6 +947,32 @@ export default function NodePage() {
                 {submitLoading ? '提交中...' : '确定'}
               </Button>
             </ModalFooter>
+          </ModalContent>
+        </Modal>
+
+        {/* 出口服务设置弹窗 */}
+        <Modal isOpen={exitModalOpen} onOpenChange={setExitModalOpen} size="md">
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader>设置出口节点服务</ModalHeader>
+                <ModalBody>
+                  <div className="space-y-3">
+                    <Input label="端口" type="number" value={String(exitPort)} onChange={(e:any)=>setExitPort(Number(e.target.value))} />
+                    <Input label="密码" type="text" value={exitPassword} onChange={(e:any)=>setExitPassword(e.target.value)} />
+                    <Input label="加密方法" value={exitMethod} onChange={(e:any)=>setExitMethod(e.target.value)} description="默认 AEAD_CHACHA20_POLY1305" />
+                    <Divider />
+                    <Input label="观察器(observer)" value={exitObserver} onChange={(e:any)=>setExitObserver(e.target.value)} description="默认 console，可留空" />
+                    <Input label="限速(limiter)" value={exitLimiter} onChange={(e:any)=>setExitLimiter(e.target.value)} description="可选，需在节点注册对应限速器" />
+                    <Input label="连接限速(rlimiter)" value={exitRLimiter} onChange={(e:any)=>setExitRLimiter(e.target.value)} description="可选，需在节点注册对应限速器" />
+                  </div>
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>关闭</Button>
+                  <Button color="primary" isLoading={exitSubmitting} onPress={submitExit}>保存</Button>
+                </ModalFooter>
+              </>
+            )}
           </ModalContent>
         </Modal>
 

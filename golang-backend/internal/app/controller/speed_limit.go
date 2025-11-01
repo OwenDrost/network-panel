@@ -1,0 +1,97 @@
+package controller
+
+import (
+	"net/http"
+	"time"
+
+	"flux-panel/golang-backend/internal/app/dto"
+	"flux-panel/golang-backend/internal/app/model"
+	"flux-panel/golang-backend/internal/app/response"
+	dbpkg "flux-panel/golang-backend/internal/db"
+	"github.com/gin-gonic/gin"
+)
+
+// POST /api/v1/speed-limit/create
+func SpeedLimitCreate(c *gin.Context) {
+	var req dto.SpeedLimitDto
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var t model.Tunnel
+	if err := dbpkg.DB.First(&t, req.TunnelID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("隧道不存在"))
+		return
+	}
+	// create
+	now := time.Now().UnixMilli()
+	sl := model.SpeedLimit{CreatedTime: now, UpdatedTime: now, Status: 1, Name: req.Name, Speed: req.Speed, TunnelID: req.TunnelID, TunnelName: req.TunnelName}
+	if err := dbpkg.DB.Create(&sl).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("限速规则创建失败"))
+		return
+	}
+	// Gost limiter add is stubbed
+	c.JSON(http.StatusOK, response.OkNoData())
+}
+
+// POST /api/v1/speed-limit/list
+func SpeedLimitList(c *gin.Context) {
+	var list []model.SpeedLimit
+	dbpkg.DB.Find(&list)
+	c.JSON(http.StatusOK, response.Ok(list))
+}
+
+// POST /api/v1/speed-limit/update
+func SpeedLimitUpdate(c *gin.Context) {
+	var req dto.SpeedLimitUpdateDto
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var sl model.SpeedLimit
+	if err := dbpkg.DB.First(&sl, req.ID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("限速规则不存在"))
+		return
+	}
+	var t model.Tunnel
+	if err := dbpkg.DB.First(&t, req.TunnelID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("隧道不存在"))
+		return
+	}
+	sl.Name, sl.Speed, sl.TunnelID, sl.TunnelName = req.Name, req.Speed, req.TunnelID, req.TunnelName
+	sl.UpdatedTime = time.Now().UnixMilli()
+	if err := dbpkg.DB.Save(&sl).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("限速规则更新失败"))
+		return
+	}
+	c.JSON(http.StatusOK, response.OkMsg("限速规则更新成功"))
+}
+
+// POST /api/v1/speed-limit/delete
+func SpeedLimitDelete(c *gin.Context) {
+	var p struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var cnt int64
+	dbpkg.DB.Model(&model.UserTunnel{}).Where("speed_id = ?", p.ID).Count(&cnt)
+	if cnt > 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("该限速规则还有用户在使用 请先取消分配"))
+		return
+	}
+	if err := dbpkg.DB.Delete(&model.SpeedLimit{}, p.ID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("限速规则删除失败"))
+		return
+	}
+	c.JSON(http.StatusOK, response.OkMsg("限速规则删除成功"))
+}
+
+// POST /api/v1/speed-limit/tunnels
+func SpeedLimitTunnels(c *gin.Context) {
+	var list []model.Tunnel
+	dbpkg.DB.Find(&list)
+	c.JSON(http.StatusOK, response.Ok(list))
+}
