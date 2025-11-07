@@ -34,7 +34,7 @@ services:
       JWT_SECRET: network-panel-secret
       LOG_DIR: /app/logs
     ports:
-      - "16365:6365"
+      - "6365:6365"
     depends_on:
       mysql:
         condition: service_healthy

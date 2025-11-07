@@ -1,12 +1,15 @@
 # Multi-stage build: frontend + backend into a single minimal image
 
-# --- Frontend build ---
-FROM node:20-alpine AS fe
+# --- Frontend (two options) ---
+# Option A: use prebuilt assets from local workspace (vite-frontend/dist)
+FROM scratch AS fe_local
+COPY vite-frontend/dist /fe/dist
+
+# Option B: build inside Docker (default)
+FROM node:22-alpine AS fe_build
 WORKDIR /fe
-# 仅复制包清单，利用缓存
 COPY vite-frontend/package*.json ./
 RUN npm install --legacy-peer-deps --no-audit --no-fund
-# 复制源码并构建
 COPY vite-frontend/ .
 RUN npm run build
 
@@ -34,13 +37,13 @@ RUN GOOS=linux GOARCH=amd64 go build -trimpath -mod=vendor -ldflags "-w -s" -o /
     GOOS=linux GOARCH=arm   GOARM=7 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent2-linux-armv7 ./golang-backend/cmd/flux-agent
 
 # --- Final runtime ---
-FROM alpine:3.19
+FROM alpine:3.19 AS final
 WORKDIR /app
 ENV PORT=6365
 
 # 不在运行期做 apk add，避免同类问题（若应用需要 HTTPS 出站，建议单独准备带 CA 的基础镜像或手动拷贝证书）
 COPY --from=be /app/server /app/server
-COPY --from=fe /fe/dist /app/public
+COPY --from=fe_build /fe/dist /app/public
 
 # 发布多架构 agent
 RUN mkdir -p /app/public/flux-agent
@@ -52,6 +55,28 @@ COPY --from=be /app/flux-agent2-linux-arm64  /app/public/flux-agent/flux-agent2-
 COPY --from=be /app/flux-agent2-linux-armv7  /app/public/flux-agent/flux-agent2-linux-armv7
 
 # serve install.sh from the backend container
+COPY install.sh /app/install.sh
+
+EXPOSE 6365
+CMD ["/app/server"]
+
+# --- Final runtime (use local prebuilt frontend) ---
+FROM alpine:3.19 AS final-local
+WORKDIR /app
+ENV PORT=6365
+
+COPY --from=be /app/server /app/server
+COPY --from=fe_local /fe/dist /app/public
+
+# 发布多架构 agent
+RUN mkdir -p /app/public/flux-agent
+COPY --from=be /app/flux-agent-linux-amd64   /app/public/flux-agent/flux-agent-linux-amd64
+COPY --from=be /app/flux-agent-linux-arm64   /app/public/flux-agent/flux-agent-linux-arm64
+COPY --from=be /app/flux-agent-linux-armv7   /app/public/flux-agent/flux-agent-linux-armv7
+COPY --from=be /app/flux-agent2-linux-amd64  /app/public/flux-agent/flux-agent2-linux-amd64
+COPY --from=be /app/flux-agent2-linux-arm64  /app/public/flux-agent/flux-agent2-linux-arm64
+COPY --from=be /app/flux-agent2-linux-armv7  /app/public/flux-agent/flux-agent2-linux-armv7
+
 COPY install.sh /app/install.sh
 
 EXPOSE 6365
