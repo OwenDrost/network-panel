@@ -60,6 +60,18 @@ export const setTunnelIface = (tunnelId: number, ifaces: Array<{nodeId:number, i
 export const getTunnelBind = (tunnelId: number) => Network.post("/tunnel/bind/get", { tunnelId });
 export const setTunnelBind = (tunnelId: number, binds: Array<{nodeId:number, ip:string}>) => Network.post("/tunnel/bind/set", { tunnelId, binds });
 
+// EasyTier组网
+export const etStatus = () => Network.get("/easytier/status");
+export const etEnable = (data: { enable: boolean; masterNodeId: number; ip: string; port: number; }) => Network.post("/easytier/enable", data);
+export const etNodes = () => Network.post("/easytier/nodes", {});
+export const etJoin = (data: { nodeId: number; ip: string; port: number; peerNodeId?: number; }) => Network.post("/easytier/join", data);
+export const etSuggestPort = (nodeId:number) => Network.post("/easytier/suggest-port", { nodeId });
+export const etRemove = (nodeId:number) => Network.post("/easytier/remove", { nodeId });
+export const etChangePeer = (data:{ nodeId:number; peerNodeId:number; }) => Network.post("/easytier/change-peer", data);
+export const etAutoAssign = (mode:string = 'chain') => Network.post("/easytier/auto-assign", { mode });
+export const etRedeployMaster = () => Network.post("/easytier/redeploy-master", {});
+export const listNodeOps = (nodeId:number, limit:number=50) => Network.post("/node/ops", { nodeId, limit });
+
 // 用户隧道权限管理操作 - 全部使用POST请求
 export const assignUserTunnel = (data: any) => Network.post("/tunnel/user/assign", data);
 export const getUserTunnelList = (queryData: any = {}) => Network.post("/tunnel/user/list", queryData);

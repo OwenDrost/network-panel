@@ -17,6 +17,8 @@ func RegisterRoutes(r *gin.Engine) {
 	r.GET("/health", func(c *gin.Context) { c.String(200, "ok") })
 	// serve install script for nodes
 	r.GET("/install.sh", controller.InstallScript)
+	// serve easytier installer and templates
+	r.GET("/easytier/:file", func(c *gin.Context){ f := c.Param("file"); if f=="" { c.JSON(404, gin.H{"code":404}); return } ; c.File("easytier/"+f) })
 	// serve flux-agent binaries
 	r.GET("/flux-agent/:file", func(c *gin.Context) {
 		f := c.Param("file")
@@ -87,6 +89,7 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/network-stats-batch", controller.NodeNetworkStatsBatch)
 		node.POST("/sysinfo", controller.NodeSysinfo)
 		node.POST("/interfaces", controller.NodeInterfaces)
+        node.POST("/ops", controller.NodeOps)
 	}
 
 	// tunnel
@@ -212,5 +215,21 @@ func RegisterRoutes(r *gin.Engine) {
 		agent.POST("/reconcile-node", controller.AgentReconcileNode)
 		agent.POST("/probe-targets", controller.AgentProbeTargets)
 		agent.POST("/report-probe", controller.AgentReportProbe)
+	}
+
+	// easytier networking (admin)
+	easy := api.Group("/easytier")
+	easy.Use(middleware.RequireRole())
+	{
+		easy.GET("/status", controller.EasyTierStatus)
+		easy.POST("/enable", controller.EasyTierEnable)
+		easy.POST("/nodes", controller.EasyTierListNodes)
+		easy.POST("/join", controller.EasyTierJoin)
+		easy.POST("/remove", controller.EasyTierRemove)
+		easy.POST("/suggest-port", controller.EasyTierSuggestPort)
+		easy.POST("/change-peer", controller.EasyTierChangePeer)
+		easy.POST("/auto-assign", controller.EasyTierAutoAssign)
+		easy.POST("/redeploy-master", controller.EasyTierRedeployMaster)
+		easy.GET("/ghproxy/*path", controller.EasyTierProxy)
 	}
 }

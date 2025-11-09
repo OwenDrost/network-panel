@@ -196,6 +196,20 @@ func NodeInstallCmd(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(cmd))
 }
 
+// POST /api/v1/node/ops {nodeId, limit}
+func NodeOps(c *gin.Context) {
+    var p struct{ NodeID int64 `json:"nodeId"`; Limit int `json:"limit"` }
+    if err := c.ShouldBindJSON(&p); err != nil { c.JSON(http.StatusOK, response.ErrMsg("参数错误")); return }
+    if p.Limit <= 0 || p.Limit > 200 { p.Limit = 50 }
+    var list []model.NodeOpLog
+    if p.NodeID > 0 {
+        dbpkg.DB.Where("node_id = ?", p.NodeID).Order("time_ms desc").Limit(p.Limit).Find(&list)
+    } else {
+        dbpkg.DB.Order("time_ms desc").Limit(p.Limit).Find(&list)
+    }
+    c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": list}))
+}
+
 // utils (local)
 func wrapIPv6(hostport string) string {
 	// naive: if value contains ':' more than once and not wrapped, wrap host

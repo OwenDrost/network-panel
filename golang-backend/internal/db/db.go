@@ -106,6 +106,7 @@ func Init() error {
 		&model.Alert{},
 		&model.NodeSysInfo{},
 		&model.NodeRuntime{},
+		&model.NodeOpLog{},
 	); err != nil {
 		return err
 	}

@@ -122,6 +122,20 @@ func (StatisticsFlow) TableName() string { return "statistics_flow" }
 // Ensure models compile with gorm
 var _ *gorm.DB
 
+// NodeOpLog stores generic operation results from node (RunScript/WriteFile/RestartService/StopService)
+type NodeOpLog struct {
+    ID        int64  `gorm:"primaryKey;column:id" json:"id"`
+    TimeMs    int64  `gorm:"column:time_ms" json:"timeMs"`
+    NodeID    int64  `gorm:"column:node_id" json:"nodeId"`
+    Cmd       string `gorm:"column:cmd" json:"cmd"`
+    RequestID string `gorm:"column:request_id" json:"requestId"`
+    Success   int    `gorm:"column:success" json:"success"` // 1 ok, 0 fail
+    Message   string `gorm:"column:message" json:"message"`
+    Stdout    *string `gorm:"column:stdout" json:"stdout,omitempty"`
+    Stderr    *string `gorm:"column:stderr" json:"stderr,omitempty"`
+}
+func (NodeOpLog) TableName() string { return "node_op_log" }
+
 // ExitSetting persists the last configured SS exit settings per node
 type ExitSetting struct {
     BaseEntity

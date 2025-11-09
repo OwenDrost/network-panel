@@ -789,24 +789,32 @@ func ForwardDiagnoseStep(c *gin.Context) {
             c.JSON(http.StatusOK, response.ErrMsg("仅隧道转发支持iperf3"))
             return
         }
-		exitIP := orString(ptrString(t.OutIP), outNode.ServerIP)
-		// 1) 让出口节点随机端口启动服务器
-		srvReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "server": true, "port": 0}
-		srvRes, ok := RequestDiagnose(outNode.ID, srvReq, 6*time.Second)
-		if !ok {
-			c.JSON(http.StatusOK, response.ErrMsg("出口节点未响应iperf3服务启动"))
-			return
-		}
-		srvPort := 0
-		if data, _ := srvRes["data"].(map[string]interface{}); data != nil {
-			if p, ok2 := toFloat(data["port"]); ok2 {
-				srvPort = int(p)
-			}
-		}
-		if srvPort == 0 {
-			c.JSON(http.StatusOK, response.ErrMsg("iperf3服务未返回端口"))
-			return
-		}
+        exitIP := orString(ptrString(t.OutIP), outNode.ServerIP)
+        // 1) 让出口节点在端口范围内启动服务器
+        minP, maxP := 10000, 65535
+        if outNode.PortSta > 0 { minP = outNode.PortSta }
+        if outNode.PortEnd > 0 { maxP = outNode.PortEnd }
+        prefer := outNode.PortSta
+        if prefer <= 0 { prefer = minP }
+        wantedSrvPort := findFreePortOnNode(outNode.ID, prefer, minP, maxP)
+        if wantedSrvPort == 0 { wantedSrvPort = minP }
+        srvReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "server": true, "port": wantedSrvPort}
+        srvRes, ok := RequestDiagnose(outNode.ID, srvReq, 6*time.Second)
+        if !ok {
+            c.JSON(http.StatusOK, response.ErrMsg("出口节点未响应iperf3服务启动"))
+            return
+        }
+        srvPort := wantedSrvPort
+        if data, _ := srvRes["data"].(map[string]interface{}); data != nil {
+            if p, ok2 := toFloat(data["port"]); ok2 {
+                srvPort = int(p)
+            }
+        }
+        if srvPort < minP || srvPort > maxP { srvPort = wantedSrvPort }
+        if srvPort == 0 {
+            c.JSON(http.StatusOK, response.ErrMsg("iperf3服务未返回端口"))
+            return
+        }
 		// 2) 入口节点作为客户端 -R 到出口
 		cliReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "client": true, "host": exitIP, "port": srvPort, "reverse": true, "duration": 5}
 		cliRes, ok := RequestDiagnose(inNode.ID, cliReq, 12*time.Second)

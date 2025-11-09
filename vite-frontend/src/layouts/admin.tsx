@@ -90,6 +90,16 @@ export default function AdminLayout({
       ),
       adminOnly: true
     },
+    {
+      path: '/easytier',
+      label: '组网',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M3 3h4v4H3V3zm5 5h4v4H8V8zm-5 5h4v4H3v-4zm10-10h4v4h-4V3zm0 10h4v4h-4v-4z" />
+        </svg>
+      ),
+      adminOnly: true
+    },
          {
            path: '/migrate',
            label: '数据迁移',

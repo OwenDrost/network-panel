@@ -56,6 +56,9 @@ COPY --from=be /app/flux-agent2-linux-armv7  /app/public/flux-agent/flux-agent2-
 
 # serve install.sh from the backend container
 COPY install.sh /app/install.sh
+# ship easytier assets for download by agents
+RUN mkdir -p /app/easytier
+COPY easytier/ /app/easytier/
 
 EXPOSE 6365
 CMD ["/app/server"]
@@ -78,6 +81,9 @@ COPY --from=be /app/flux-agent2-linux-arm64  /app/public/flux-agent/flux-agent2-
 COPY --from=be /app/flux-agent2-linux-armv7  /app/public/flux-agent/flux-agent2-linux-armv7
 
 COPY install.sh /app/install.sh
+# ship easytier assets for download by agents
+RUN mkdir -p /app/easytier
+COPY easytier/ /app/easytier/
 
 EXPOSE 6365
 CMD ["/app/server"]

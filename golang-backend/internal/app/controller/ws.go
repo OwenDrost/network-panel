@@ -40,7 +40,9 @@ var (
 	adminMu     sync.RWMutex
 	adminConns  = map[*websocket.Conn]struct{}{}
 	diagMu      sync.Mutex
-	diagWaiters = map[string]chan map[string]interface{}{}
+    diagWaiters = map[string]chan map[string]interface{}{}
+    opMu       sync.Mutex
+    opWaiters  = map[string]chan map[string]interface{}{}
 )
 
 // GET /system-info?type=1&secret=...&version=...
@@ -160,28 +162,65 @@ func SystemInfoWS(c *gin.Context) {
 			}
 			// Try to parse as command reply first
 			var generic map[string]interface{}
-			if err := json.Unmarshal(msg, &generic); err == nil {
-				if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult") {
-					if reqID, ok := generic["requestId"].(string); ok {
-						diagMu.Lock()
-						ch := diagWaiters[reqID]
-						delete(diagWaiters, reqID)
-						diagMu.Unlock()
-						if ch != nil {
-							// pass full payload data back
-							select {
-							case ch <- generic:
-							default:
-							}
-							close(ch)
-							continue
-						}
-					}
-				} else {
-					// Other JSON payload received (debug)
-					jlog(map[string]interface{}{"event": "node_unknown_json", "nodeId": node.ID, "payload": string(msg)})
-				}
-			}
+            if err := json.Unmarshal(msg, &generic); err == nil {
+                if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult") {
+                    if reqID, ok := generic["requestId"].(string); ok {
+                        diagMu.Lock()
+                        ch := diagWaiters[reqID]
+                        delete(diagWaiters, reqID)
+                        diagMu.Unlock()
+                        if ch != nil {
+                            // pass full payload data back
+                            select {
+                            case ch <- generic:
+                            default:
+                            }
+                            close(ch)
+                            continue
+                        }
+                    }
+                } else if ok && (t == "RunScriptResult" || t == "WriteFileResult" || t == "RestartServiceResult" || t == "StopServiceResult") {
+                    if reqID, ok := generic["requestId"].(string); ok {
+                        opMu.Lock()
+                        ch := opWaiters[reqID]
+                        delete(opWaiters, reqID)
+                        opMu.Unlock()
+                        // persist to node_op_log
+                        var nid int64 = node.ID
+                        okFlag := 0
+                        if data, _ := generic["data"].(map[string]interface{}); data != nil {
+                            if s, _ := data["success"].(bool); s { okFlag = 1 }
+                            msg, _ := data["message"].(string)
+                            so, _ := data["stdout"].(string)
+                            se, _ := data["stderr"].(string)
+                            var soPtr, sePtr *string
+                            if so != "" { soPtr = &so }
+                            if se != "" { sePtr = &se }
+                            _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: t, RequestID: reqID, Success: okFlag, Message: msg, Stdout: soPtr, Stderr: sePtr}).Error
+                        } else {
+                            _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: t, RequestID: reqID, Success: okFlag, Message: "no data"}).Error
+                        }
+                        if ch != nil {
+                            select { case ch <- generic: default: }
+                            close(ch)
+                            continue
+                        }
+                    }
+                } else if ok && t == "OpLog" {
+                    // Generic operation progress log from agent; persist for UI visibility
+                    var nid int64 = node.ID
+                    step, _ := generic["step"].(string)
+                    msg := ""
+                    if m, _ := generic["message"].(string); m != "" { msg = m }
+                    if data, _ := generic["data"].(map[string]interface{}); data != nil {
+                        if s, _ := data["message"].(string); s != "" { msg = s }
+                    }
+                    _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "OpLog:" + step, RequestID: "", Success: 1, Message: msg}).Error
+                } else {
+                    // Other JSON payload received (debug)
+                    jlog(map[string]interface{}{"event": "node_unknown_json", "nodeId": node.ID, "payload": string(msg)})
+                }
+            }
 			// Else treat as system info payload
 			payload := parseNodeSystemInfo(node.Secret, msg)
 			if payload != nil {
@@ -375,6 +414,41 @@ func RequestDiagnose(nodeID int64, payload map[string]interface{}, timeout time.
 		jlog(map[string]interface{}{"event": "diagnose_timeout", "nodeId": nodeID, "reqId": reqID, "timeoutMs": timeout.Milliseconds()})
 		return nil, false
 	}
+}
+
+// RequestOp waits for a generic operation result from node (RunScript/WriteFile/RestartService/StopService)
+func RequestOp(nodeID int64, cmd string, data map[string]interface{}, timeout time.Duration) (map[string]interface{}, bool) {
+    reqID, _ := data["requestId"].(string)
+    if reqID == "" { reqID = RandUUID(); data["requestId"] = reqID }
+    // log sending summary (truncate large fields)
+    sum := func(k string) string { if v, ok := data[k].(string); ok { if len(v) > 200 { return v[:200] } ; return v } ; return "" }
+    jlog(map[string]interface{}{"event":"op_send","nodeId":nodeID,"cmd":cmd,"requestId":reqID,"contentSample":sum("content"),"path":data["path"],"name":data["name"],"url":data["url"]})
+    if err := sendWSCommand(nodeID, cmd, data); err != nil { return nil, false }
+    // persist op_send to NodeOpLog for front-end visibility
+    var msg string
+    if v, ok := data["path"].(string); ok && v != "" { msg += " path=" + v }
+    if v, ok := data["name"].(string); ok && v != "" { msg += " name=" + v }
+    if v, ok := data["url"].(string); ok && v != "" { msg += " url=" + v }
+    if v, ok := data["content"].(string); ok && v != "" { msg += " content=" + v }
+    _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: cmd + "-send", RequestID: reqID, Success: 1, Message: strings.TrimSpace(msg)}).Error
+    ch := make(chan map[string]interface{}, 1)
+    opMu.Lock(); opWaiters[reqID] = ch; opMu.Unlock()
+    defer func(){ opMu.Lock(); delete(opWaiters, reqID); opMu.Unlock() }()
+    select {
+    case res := <-ch:
+        jlog(map[string]interface{}{"event":"op_recv","nodeId":nodeID,"cmd":cmd,"requestId":reqID,"data":res["data"]})
+        // persist op_recv summary
+        var okFlag int
+        var msg string
+        if data, _ := res["data"].(map[string]interface{}); data != nil {
+            if s, _ := data["success"].(bool); s { okFlag = 1 }
+            msg, _ = data["message"].(string)
+        }
+        _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: cmd + "-recv", RequestID: reqID, Success: okFlag, Message: msg}).Error
+        return res, true
+    case <-time.After(timeout):
+        return nil, false
+    }
 }
 
 // broadcastToAdmins sends a JSON message to all admin monitor connections.

@@ -33,7 +33,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.4.2"
+var versionBase = "1.0.5"
 var version = "" // computed in main()
 
 func isAgent2Binary() bool {
@@ -353,6 +353,59 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 		case "UninstallAgent":
 			go func() {
 				_ = uninstallSelf()
+			}()
+		case "RunScript":
+			var req map[string]any
+			_ = json.Unmarshal(m.Data, &req)
+			go func() {
+				reqID, _ := req["requestId"].(string)
+				content, _ := req["content"].(string)
+				urlStr, _ := req["url"].(string)
+				log.Printf("{\"event\":\"run_script_recv\",\"hasContent\":%t,\"contentLen\":%d,\"url\":%q}", content != "", len(content), urlStr)
+				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "run_script_recv", "message": fmt.Sprintf("RunScript recv hasContent=%t contentLen=%d url=%s content=%s", content != "", len(content), urlStr, content)})
+				res := map[string]any{"type": "RunScriptResult", "requestId": reqID, "data": runScript(req)}
+				_ = c.WriteJSON(res)
+				if d, ok := res["data"].(map[string]any); ok {
+					_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "run_script_done", "message": fmt.Sprintf("RunScript done success=%v message=%v stdout=%v stderr=%v", d["success"], d["message"], d["stdout"], d["stderr"])})
+				}
+			}()
+		case "WriteFile":
+			var req map[string]any
+			_ = json.Unmarshal(m.Data, &req)
+			go func() {
+				reqID, _ := req["requestId"].(string)
+				path, _ := req["path"].(string)
+				content, _ := req["content"].(string)
+				log.Printf("{\"event\":\"write_file_recv\",\"path\":%q,\"contentLen\":%d}", path, len(content))
+				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "write_file_recv", "message": fmt.Sprintf("WriteFile recv path=%s bytes=%d content=%s", path, len(content), content)})
+				res := map[string]any{"type": "WriteFileResult", "requestId": reqID, "data": writeFileOp(req)}
+				_ = c.WriteJSON(res)
+				if d, ok := res["data"].(map[string]any); ok {
+					_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "write_file_done", "message": fmt.Sprintf("WriteFile done path=%s success=%v message=%v", path, d["success"], d["message"])})
+				}
+			}()
+		case "RestartService":
+			var req map[string]any
+			_ = json.Unmarshal(m.Data, &req)
+			go func() {
+				reqID, _ := req["requestId"].(string)
+				name, _ := req["name"].(string)
+				log.Printf("{\"event\":\"restart_service_recv\",\"name\":%q}", name)
+				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "restart_service_recv", "message": fmt.Sprintf("RestartService recv name=%s", name)})
+				ok := tryRestartService(name)
+				res := map[string]any{"type": "RestartServiceResult", "requestId": reqID, "data": map[string]any{"success": ok}}
+				_ = c.WriteJSON(res)
+				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "restart_service_done", "message": fmt.Sprintf("RestartService done name=%s success=%v", name, ok)})
+			}()
+		case "StopService":
+			var req map[string]any
+			_ = json.Unmarshal(m.Data, &req)
+			go func() {
+				reqID, _ := req["requestId"].(string)
+				name, _ := req["name"].(string)
+				ok := tryStopService(name)
+				res := map[string]any{"type": "StopServiceResult", "requestId": reqID, "data": map[string]any{"success": ok}}
+				_ = c.WriteJSON(res)
 			}()
 		default:
 			// ignore unknown
@@ -1314,6 +1367,97 @@ WantedBy=multi-user.target
 	_ = exec.Command("systemctl", "enable", name).Run()
 }
 
+// ---- Generic Ops ----
+
+func runScript(req map[string]any) map[string]any {
+	// fields: content|string optional, url|string optional, timeoutSec|number
+	content, _ := req["content"].(string)
+	urlStr, _ := req["url"].(string)
+	timeoutSec := 300
+	if v, ok := req["timeoutSec"].(float64); ok && int(v) > 0 {
+		timeoutSec = int(v)
+	}
+	var scriptPath string
+	var err error
+	if content != "" {
+		f, e := os.CreateTemp("", "np_run_*.sh")
+		if e != nil {
+			return map[string]any{"success": false, "message": e.Error()}
+		}
+		defer os.Remove(f.Name())
+		_, _ = f.WriteString(content)
+		f.Close()
+		_ = os.Chmod(f.Name(), 0755)
+		scriptPath = f.Name()
+		log.Printf("{\"event\":\"run_script_prepare\",\"mode\":\"content\",\"path\":%q,\"contentSample\":%q}", scriptPath, firstN(content, 120))
+	} else if urlStr != "" {
+		f, e := os.CreateTemp("", "np_run_*.sh")
+		if e != nil {
+			return map[string]any{"success": false, "message": e.Error()}
+		}
+		f.Close()
+		scriptPath = f.Name()
+		if err = download(urlStr, scriptPath); err != nil {
+			return map[string]any{"success": false, "message": err.Error()}
+		}
+		_ = os.Chmod(scriptPath, 0755)
+		log.Printf("{\"event\":\"run_script_prepare\",\"mode\":\"url\",\"url\":%q,\"path\":%q}", urlStr, scriptPath)
+	} else {
+		return map[string]any{"success": false, "message": "no script content or url"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/sh", scriptPath)
+	log.Printf("{\"event\":\"run_script_exec\",\"cmd\":[%q,%q],\"timeoutSec\":%d}", "/bin/sh", scriptPath, timeoutSec)
+	out, e := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return map[string]any{"success": false, "message": "timeout"}
+	}
+	if e != nil {
+		return map[string]any{"success": false, "message": e.Error(), "stderr": string(out)}
+	}
+	return map[string]any{"success": true, "message": "ok", "stdout": string(out)}
+}
+
+func writeFileOp(req map[string]any) map[string]any {
+	path, _ := req["path"].(string)
+	content, _ := req["content"].(string)
+	if path == "" {
+		return map[string]any{"success": false, "message": "empty path"}
+	}
+	dir := filepath.Dir(path)
+	_ = os.MkdirAll(dir, 0755)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return map[string]any{"success": false, "message": err.Error()}
+	}
+	log.Printf("{\"event\":\"write_file_done\",\"path\":%q,\"bytes\":%d,\"contentSample\":%q}", path, len(content), firstN(content, 120))
+	return map[string]any{"success": true, "message": "ok"}
+}
+
+func tryStopService(name string) bool {
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		if e := exec.Command("systemctl", "stop", name).Run(); e == nil {
+			return true
+		}
+	}
+	if _, err := exec.LookPath("service"); err == nil {
+		if e := exec.Command("service", name, "stop").Run(); e == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func firstN(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
 func getExpectedVersions(addr, scheme string) (agent1, agent2 string) {
 	u := apiURL(scheme, addr, "/api/v1/version")
 	req, _ := http.NewRequest("GET", u, nil)
@@ -1356,6 +1500,11 @@ func download(url, dest string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		// read small snippet for diagnostics
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("download failed: %s, body=%q", resp.Status, string(b))
+	}
 	f, err := os.Create(dest)
 	if err != nil {
 		return err

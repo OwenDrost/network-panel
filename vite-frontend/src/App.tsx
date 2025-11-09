@@ -20,6 +20,7 @@ import { SettingsPage } from "@/pages/settings";
 import AdminLayout from "@/layouts/admin";
 import H5Layout from "@/layouts/h5";
 import H5SimpleLayout from "@/layouts/h5-simple";
+import EasyTierPage from "@/pages/easytier";
 
 import { isLoggedIn } from "@/utils/auth";
 import { siteConfig } from "@/config/site";
@@ -226,7 +227,15 @@ function App() {
           <ProtectedRoute>
             <NodePage />
           </ProtectedRoute>
-        } 
+        }
+      />
+      <Route
+        path="/easytier"
+        element={
+          <ProtectedRoute>
+            <EasyTierPage />
+          </ProtectedRoute>
+        }
       />
       <Route 
         path="/user" 

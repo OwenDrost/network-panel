@@ -7,6 +7,7 @@ import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@herou
 import { Chip } from "@heroui/chip";
 import { Spinner } from "@heroui/spinner";
 import { Divider } from "@heroui/divider";
+import OpsLogModal from '@/components/OpsLogModal';
 import { Alert } from "@heroui/alert";
 // import moved above; avoid duplicate react imports
 import { getNodeInterfaces } from "@/api";
@@ -85,6 +86,9 @@ export default function TunnelPage() {
   const [loading, setLoading] = useState(true);
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
+  // 操作日志弹窗（必须放在顶部，避免 Hooks 顺序变化）
+  const [opsOpen, setOpsOpen] = useState(false);
+  // 操作日志弹窗
   
   // 模态框状态
   const [modalOpen, setModalOpen] = useState(false);
@@ -514,7 +518,6 @@ export default function TunnelPage() {
       
     );
   }
-
   return (
     
       <div className="px-3 lg:px-6 py-8">
@@ -522,7 +525,7 @@ export default function TunnelPage() {
         <div className="flex items-center justify-between mb-6">
         <div className="flex-1">
         </div>
-
+        <Button size="sm" variant="flat" onPress={()=> setOpsOpen(true)}>操作日志</Button>
         <Button
               size="sm"
               variant="flat"
@@ -535,6 +538,7 @@ export default function TunnelPage() {
      
         </div>
 
+        <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
         {/* 隧道卡片网格 */}
         {tunnels.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
@@ -932,7 +936,7 @@ export default function TunnelPage() {
                             <span className="text-default-600">入口出口IP</span>
                             <Select
                               size="sm"
-                              className="max-w-[260px]"
+                              className="min-w-[320px] max-w-[380px]"
                               selectedKeys={entryIface? [entryIface]: []}
                               onOpenChange={async()=>{ await fetchNodeIfaces(form.inNodeId||0); }}
                               onSelectionChange={(keys)=>{ const k=Array.from(keys)[0] as string; setEntryIface(k||''); }}
@@ -984,6 +988,7 @@ export default function TunnelPage() {
                                       aria-label="选择出站IP(接口)"
                                       label="出站IP(接口)"
                                       size="sm"
+                                      className="min-w-[320px] max-w-[380px]"
                                       selectedKeys={midIfaces[nid]? [midIfaces[nid]]: []}
                                       onOpenChange={async()=>{ await fetchNodeIfaces(nid); }}
                                       onSelectionChange={(keys)=>{
@@ -998,6 +1003,7 @@ export default function TunnelPage() {
                                       aria-label="选择监听IP(入站)"
                                       label="监听IP(入站)"
                                       size="sm"
+                                      className="min-w-[320px] max-w-[380px]"
                                       selectedKeys={midBindIps[nid]? [midBindIps[nid]]: []}
                                       onOpenChange={async()=>{ await fetchNodeIfaces(nid); }}
                                       onSelectionChange={(keys)=>{
@@ -1024,6 +1030,7 @@ export default function TunnelPage() {
                         <Select
                           label="出口监听IP"
                           placeholder="请选择出口监听IP"
+                          className="min-w-[320px] max-w-[380px]"
                           selectedKeys={exitBindIp ? [exitBindIp] : []}
                           onOpenChange={async()=>{ if (form.outNodeId) await fetchNodeIfaces(form.outNodeId); }}
                           onSelectionChange={(keys)=>{

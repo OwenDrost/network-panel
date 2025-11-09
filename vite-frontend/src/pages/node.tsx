@@ -10,6 +10,7 @@ import { Chip } from "@heroui/chip";
 import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
+import OpsLogModal from '@/components/OpsLogModal';
 import { Divider } from "@heroui/divider";
 import { queryNodeServices, getNodeNetworkStatsBatch, getVersionInfo } from "@/api";
 import toast from 'react-hot-toast';
@@ -115,6 +116,7 @@ export default function NodePage() {
   const [wsUrlShown, setWsUrlShown] = useState<string>('');
   const [serverVersion, setServerVersion] = useState<string>('');
   const [agentVersion, setAgentVersion] = useState<string>('');
+  const [opsOpen, setOpsOpen] = useState(false);
 
   useEffect(() => {
     loadNodes();
@@ -838,6 +840,10 @@ export default function NodePage() {
             </CardBody>
           </Card>
         ) : (
+          <>
+          <div className="flex justify-end mb-2">
+            <Button size="sm" variant="flat" onPress={()=> setOpsOpen(true)}>操作日志</Button>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
             {nodeList.map((node) => (
               <Card 
@@ -1063,6 +1069,8 @@ export default function NodePage() {
               </Card>
             ))}
           </div>
+          <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
+          </>
         )}
 
         {/* 新增/编辑节点对话框 */}

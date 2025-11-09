@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwind from "@tailwindcss/vite";
 import path from "path";
 // inject app version from package.json
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -8,6 +9,7 @@ import pkg from './package.json';
 
 export default defineConfig({
   plugins: [
+    tailwind(),
     react(),
   ],
   base: '/app/',

@@ -445,8 +445,16 @@ func TunnelDiagnoseStep(c *gin.Context) {
             return
         }
         exitIP := orString(ptrString(t.OutIP), outNode.ServerIP)
-        // 1) 出口节点启动 iperf3 server（随机端口）
-        srvReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "server": true, "port": 0, "ctx": map[string]any{"src": "tunnel", "step": "iperf3_server", "tunnelId": t.ID}}
+        // 1) 出口节点启动 iperf3 server（在节点端口范围内挑选可用端口）
+        // 读取出口节点端口范围并选择空闲端口
+        minP, maxP := 10000, 65535
+        if outNode.PortSta > 0 { minP = outNode.PortSta }
+        if outNode.PortEnd > 0 { maxP = outNode.PortEnd }
+        prefer := outNode.PortSta
+        if prefer <= 0 { prefer = minP }
+        wantedSrvPort := findFreePortOnNode(outNode.ID, prefer, minP, maxP)
+        if wantedSrvPort == 0 { wantedSrvPort = minP }
+        srvReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "server": true, "port": wantedSrvPort, "ctx": map[string]any{"src": "tunnel", "step": "iperf3_server", "tunnelId": t.ID}}
         _ = sendWSCommand(outNode.ID, "Diagnose", srvReq)
         srvRes, ok := RequestDiagnose(outNode.ID, srvReq, 8*time.Second)
         if !ok {
@@ -458,6 +466,10 @@ func TunnelDiagnoseStep(c *gin.Context) {
             if p2, ok2 := data["port"].(float64); ok2 {
                 srvPort = int(p2)
             }
+        }
+        // 如果 agent 未回端口或端口越界，则回退到我们挑选的 wantedSrvPort
+        if srvPort <= 0 || srvPort < minP || srvPort > maxP {
+            srvPort = wantedSrvPort
         }
         if srvPort == 0 {
             c.JSON(http.StatusOK, response.ErrMsg("iperf3服务未返回端口"))

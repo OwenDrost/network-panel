@@ -12,6 +12,7 @@ import { Switch } from "@heroui/switch";
 import { Alert } from "@heroui/alert";
 import { Accordion, AccordionItem } from "@heroui/accordion";
 import toast from 'react-hot-toast';
+import OpsLogModal from '@/components/OpsLogModal';
 import {
   DndContext,
   closestCenter,
@@ -196,6 +197,7 @@ export default function ForwardPage() {
     message: string;
     forwardName?: string;
   }>>([]);
+  const [opsOpen, setOpsOpen] = useState(false);
   
   // 表单状态
   const [form, setForm] = useState<ForwardForm>({
@@ -1453,6 +1455,7 @@ export default function ForwardPage() {
           <div className="flex-1">
           </div>
           <div className="flex items-center gap-3">
+            <Button size="sm" variant="flat" onPress={()=> setOpsOpen(true)}>操作日志</Button>
             {/* 显示模式切换按钮 */}
             <Button
               size="sm"
@@ -1509,8 +1512,7 @@ export default function ForwardPage() {
         
           </div>
         </div>
-
-
+        <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
         {/* 根据显示模式渲染不同内容 */}
         {viewMode === 'grouped' ? (
           /* 按用户和隧道分组的转发列表 */
@@ -1732,6 +1734,7 @@ export default function ForwardPage() {
                           <Select
                             label="出口监听IP"
                             placeholder="请选择出口监听IP"
+                            className="min-w-[320px] max-w-[380px]"
                             selectedKeys={exitBindIp ? [exitBindIp] : []}
                             onOpenChange={async()=>{ await fetchNodeIfaces((selectedTunnel as any).outNodeId); }}
                             onSelectionChange={(keys)=>{ const k = Array.from(keys)[0] as string; setExitBindIp(k||''); }}
@@ -1748,7 +1751,7 @@ export default function ForwardPage() {
                                 <Select
                                   aria-label="选择监听IP(入站)"
                                   size="sm"
-                                  className="max-w-[260px]"
+                                  className="min-w-[320px] max-w-[380px]"
                                   selectedKeys={midBindIps[nid]? [midBindIps[nid]]: []}
                                   onOpenChange={async()=>{ await fetchNodeIfaces(nid); }}
                                   onSelectionChange={(keys)=>{ const k = Array.from(keys)[0] as string; setMidBindIps(prev=>({...prev, [nid]: k||''})); }}
