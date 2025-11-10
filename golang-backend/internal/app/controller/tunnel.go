@@ -635,16 +635,17 @@ func TunnelDiagnoseStep(c *gin.Context) {
 				iface = &tmp
 			}
 		svc := buildServiceConfig(tmpNames[i], tmpPorts[i], target, iface)
-		// 为入口节点的临时服务强制绑定到 127.0.0.1，避免 IPv6-only 监听导致 127.0.0.1 无法连接
+		// 为入口节点的临时服务绑定到 0.0.0.0，确保使用 IPv4 监听并避免仅 IPv6 监听导致本地不可达
+		// 同时满足来自不同网络命名空间情况下的可见性需求
 		if nid == inNode.ID {
-			svc["addr"] = safeHostPort("127.0.0.1", tmpPorts[i])
+			svc["addr"] = safeHostPort("0.0.0.0", tmpPorts[i])
 		}
 			_ = sendWSCommand(nid, "AddService", []map[string]any{svc})
 			jlog(map[string]any{"event": "iperf3_tmp_add", "tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "listen": tmpPorts[i], "target": target})
 			// 记录到操作日志（每个节点gost临时通道配置）
 			if b, err := json.Marshal(svc); err == nil {
 				s := string(b)
-				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "DiagTmpServiceAdd", Success: 1, Message: fmt.Sprintf("gost临时通道配置 name=%s", tmpNames[i]), Stdout: &s}).Error
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "DiagTmpServiceAdd", RequestID: diagID, Success: 1, Message: fmt.Sprintf("gost临时通道配置 name=%s", tmpNames[i]), Stdout: &s}).Error
 			}
 		}
 		// 下发 RestartGost 以确保临时配置立即生效
@@ -683,6 +684,22 @@ func TunnelDiagnoseStep(c *gin.Context) {
 				}
 			}
 		}
+        // 额外：读取入口节点 gost 配置文件内容用于诊断日志（best-effort）
+        if readyAll {
+            script := "#!/bin/sh\nset +e\nfor p in /etc/gost/gost.json /usr/local/gost/gost.json ./gost.json; do if [ -f \"$p\" ]; then echo \"PATH:$p\"; cat \"$p\"; exit 0; fi; done; echo 'PATH:NOT_FOUND'; exit 0\n"
+            req := map[string]any{"requestId": RandUUID(), "timeoutSec": 8, "content": script}
+            if res, ok := RequestOp(inNode.ID, "RunScript", req, 10*time.Second); ok {
+                msg := "ok"
+                var so string
+                if d, _ := res["data"].(map[string]any); d != nil {
+                    if m, _ := d["message"].(string); m != "" { msg = m }
+                    if s, _ := d["stdout"].(string); s != "" { so = s }
+                }
+                if so != "" { _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagGostConfigRead", RequestID: diagID, Success: 1, Message: msg, Stdout: &so}).Error } else { _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagGostConfigRead", RequestID: diagID, Success: 1, Message: msg}).Error }
+            } else {
+                _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagGostConfigRead", RequestID: diagID, Success: 0, Message: "未响应"}).Error
+            }
+        }
         if !readyAll {
             jlog(map[string]any{"event": "iperf3_tmp_ready_partial", "tunnelId": t.ID})
             // 清理临时服务
@@ -708,18 +725,70 @@ func TunnelDiagnoseStep(c *gin.Context) {
             c.JSON(http.StatusOK, response.Ok(resFail))
             return
         }
-        // 预检：入口从 127.0.0.1 连本地临时入口端口
-        avg1, loss1, ok1, msg1, _ := diagnoseFromNodeCtx(inNode.ID, "127.0.0.1", tmpPorts[0], 1, 1500, map[string]interface{}{"src": "tunnel", "step": "iperf3_local_probe", "tunnelId": t.ID})
-        _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3LocalProbe", RequestID: diagID, Success: ifThen(ok1, 1, 0), Message: fmt.Sprintf("LOCAL %s avg=%vms loss=%v%% msg=%s", ifThen(ok1, "ok", "fail"), avg1, loss1, msg1)}).Error
-        if !ok1 {
-            for i := 0; i < len(fNodes); i++ {
-                _ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
-                _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
-            }
-            resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口本地临时端口不可达，已中止iperf3测试", "diagId": diagID}
-            c.JSON(http.StatusOK, response.Ok(resFail))
-            return
-        }
+        // 预检：入口从 127.0.0.1 连本地临时入口端口（超时可配置，默认3s）
+        localTimeout := readDiagLocalProbeTimeoutMs()
+        avg1, loss1, ok1, msg1, _ := diagnoseFromNodeCtx(inNode.ID, "127.0.0.1", tmpPorts[0], 1, localTimeout, map[string]interface{}{"src": "tunnel", "step": "iperf3_local_probe", "tunnelId": t.ID})
+		_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3LocalProbe", RequestID: diagID, Success: ifThen(ok1, 1, 0), Message: fmt.Sprintf("LOCAL %s avg=%vms loss=%v%% msg=%s", ifThen(ok1, "ok", "fail"), avg1, loss1, msg1)}).Error
+		if !ok1 {
+			// 回读 QueryServices 的实际监听状态与地址，若处于 listening，则稍作等待后重试一次
+			svcs := queryNodeServicesRaw(inNode.ID)
+			found := false
+			listening := false
+			addr := ""
+			for _, s := range svcs {
+				name, _ := s["name"].(string)
+				if name == tmpNames[0] {
+					found = true
+					if b, ok := s["listening"].(bool); ok {
+						listening = b
+					}
+					if v, ok := s["addr"].(string); ok {
+						addr = v
+					}
+					break
+				}
+				// 兜底按端口匹配
+				if !found {
+					if v, ok := s["port"].(int); ok && v == tmpPorts[0] {
+						found = true
+						if b, ok2 := s["listening"].(bool); ok2 {
+							listening = b
+						}
+						if vv, ok2 := s["addr"].(string); ok2 {
+							addr = vv
+						}
+					}
+				}
+			}
+			info := fmt.Sprintf("found=%v listening=%v addr=%s", found, listening, addr)
+			_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3LocalProbe-recheck", RequestID: diagID, Success: ifThen(listening, 1, 0), Message: info}).Error
+			if listening {
+                // 小延迟再试一次
+                time.Sleep(250 * time.Millisecond)
+                avg1b, loss1b, ok1b, msg1b, _ := diagnoseFromNodeCtx(inNode.ID, "127.0.0.1", tmpPorts[0], 1, localTimeout, map[string]interface{}{"src": "tunnel", "step": "iperf3_local_probe_retry", "tunnelId": t.ID})
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3LocalProbeRetry", RequestID: diagID, Success: ifThen(ok1b, 1, 0), Message: fmt.Sprintf("LOCAL %s avg=%vms loss=%v%% msg=%s", ifThen(ok1b, "ok", "fail"), avg1b, loss1b, msg1b)}).Error
+				if ok1b {
+					ok1 = true
+				} else {
+					// 保留原失败路径
+					for i := 0; i < len(fNodes); i++ {
+						_ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
+						_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+					}
+					resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口本地临时端口不可达，已中止iperf3测试", "diagId": diagID}
+					c.JSON(http.StatusOK, response.Ok(resFail))
+					return
+				}
+			} else {
+				for i := 0; i < len(fNodes); i++ {
+					_ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
+					_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+				}
+				resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口本地临时端口不可达，已中止iperf3测试", "diagId": diagID}
+				c.JSON(http.StatusOK, response.Ok(resFail))
+				return
+			}
+		}
         // 小延迟，确保链路稳定
         time.Sleep(300 * time.Millisecond)
         // 入口 iperf3 客户端

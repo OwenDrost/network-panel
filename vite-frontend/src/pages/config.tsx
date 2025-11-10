@@ -59,6 +59,13 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: 'input'
   },
   {
+    key: 'diag_local_probe_timeout_s',
+    label: '诊断 LocalProbe 超时(秒)',
+    placeholder: '默认 3，建议范围 2–5',
+    description: '控制 iperf3 诊断中入口本地临时端口连通性探测(127.0.0.1)的超时时长，默认为 3 秒。调大可降低偶发抖动导致的误判',
+    type: 'input'
+  },
+  {
     key: 'show_probe',
     label: '显示探针菜单',
     description: '默认关闭，开启后在左侧菜单显示“探针目标”页',
@@ -124,7 +131,7 @@ const CONFIG_ITEMS: ConfigItem[] = [
 const getInitialConfigs = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   
-  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'easytier_install_timeout_sec', 'show_probe', 'show_network'];
+  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'easytier_install_timeout_sec', 'diag_local_probe_timeout_s', 'show_probe', 'show_network'];
   const initialConfigs: Record<string, string> = {};
   
   try {
@@ -279,6 +286,8 @@ export default function ConfigPage() {
             value={configs[item.key] || ''}
             onChange={(e) => handleConfigChange(item.key, e.target.value)}
             placeholder={item.placeholder}
+            // 对秒数项启用 number 类型，其他保持默认
+            type={item.key.endsWith('_timeout_s') ? 'number' : 'text'}
             variant="bordered"
             size="md"
             classNames={{
