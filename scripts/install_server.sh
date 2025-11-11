@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-click install and run the network-panel server as a systemd service (Linux only).
+# One-click install and run the network‑panel server as a systemd service (Linux only).
 # This is NOT the agent installer. It installs the backend server binary
-# and configures DB env + auto-start.
+# and configures DB env + auto‑start.
+
+# -----------------------------------------------------------------------------
+#  WARNING: This script has been modified to remember previous user choices
+#  (such as proxy prefix and architecture) so that update operations do not
+#  repeatedly prompt for the same information.  Configuration is stored in
+#  $CONFIG_FILE and automatically reloaded on subsequent runs.  See
+#  read_config() and save_config() for details.
+# -----------------------------------------------------------------------------
 
 log() { printf '%s\n' "$*" >&2; }
 
@@ -12,17 +20,45 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
+# Service and installation paths
 SERVICE_NAME="network-panel"
 INSTALL_DIR="/opt/network-panel"
 BIN_PATH="/usr/local/bin/network-panel-server"
 ENV_FILE="/etc/default/network-panel"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-PROXY_PREFIX=""
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN_PKG="${ROOT_DIR}/golang-backend/cmd/server"
 FRONTEND_ASSET_NAME="frontend-dist.zip"
-DOT_ENV_FILE="/opt/network-panel/.env"
+DOT_ENV_FILE="${INSTALL_DIR}/.env"
 
+# -----------------------------------------------------------------------------
+# Configuration persistence
+#
+# User choices (proxy prefix and architecture) are stored in this config file.
+# On subsequent runs, values will be loaded automatically, bypassing prompts.
+# -----------------------------------------------------------------------------
+CONFIG_FILE="/etc/default/network-panel-install.conf"
+
+# Read configuration file if it exists.  Source only simple key=value pairs.
+read_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+  fi
+}
+
+# Write current configuration values to disk.  Only keys referenced here will
+# persist.  Call this after a successful install to remember the user's
+# selections for future runs.
+save_config() {
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  {
+    echo "PROXY_PREFIX=$PROXY_PREFIX"
+    echo "ARCH=$ARCH"
+  } > "$CONFIG_FILE"
+}
+
+# Detect CPU architecture; used for selecting a binary asset.
 detect_arch() {
   local m
   m=$(uname -m)
@@ -38,6 +74,9 @@ detect_arch() {
   esac
 }
 
+# Interactively confirm or override the detected architecture.  If the user
+# answers yes (default), the detected value is used.  Otherwise they may
+# specify a different architecture from the supported list.
 prompt_arch() {
   local detected
   detected="$(detect_arch)"
@@ -45,7 +84,8 @@ prompt_arch() {
   read -rp "Use detected arch ($detected)? [Y/n]: " yn
   yn=${yn:-Y}
   if [[ "$yn" =~ ^[Yy]$ ]]; then
-    printf '%s\n' "$detected"; return
+    printf '%s\n' "$detected"
+    return
   fi
   log "Available: amd64, amd64v3, arm64, armv7, 386, riscv64, s390x, loong64"
   read -rp "Enter arch: " a
@@ -53,16 +93,7 @@ prompt_arch() {
   printf '%s\n' "$a"
 }
 
-choose_source() {
-  # Not currently used; kept for future.
-  log "How to obtain the server binary?"
-  log "  1) Download prebuilt from GitHub releases (recommended)"
-  log "  2) Build from source (requires Go toolchain)"
-  read -rp "Choose [1/2]: " ch
-  ch=${ch:-1}
-  printf '%s\n' "$ch"
-}
-
+# Download a prebuilt release tarball or binary for the given architecture.
 download_prebuilt() {
   local arch="$1"
   local base="https://github.com/NiuStar/network-panel/releases/latest/download"
@@ -83,6 +114,7 @@ download_prebuilt() {
   return 1
 }
 
+# Download the frontend distribution archive.
 download_frontend_dist() {
   local base="https://github.com/NiuStar/network-panel/releases/latest/download"
   if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
@@ -95,11 +127,10 @@ download_frontend_dist() {
   return 1
 }
 
+# Extract downloaded archive or install binary directly into INSTALL_DIR.
 extract_or_install() {
   local file="$1"
   mkdir -p "$INSTALL_DIR"
-
-  # Detect archive by extension
   if [[ "$file" =~ \.tar\.gz$|\.tgz$ ]]; then
     tar -xzf "$file" -C "$INSTALL_DIR"
   elif [[ "$file" =~ \.zip$ ]]; then
@@ -113,8 +144,7 @@ extract_or_install() {
     # assume plain binary
     install -m 0755 "$file" "$BIN_PATH"
   fi
-
-  # If binary exists inside INSTALL_DIR after extraction, move it to BIN_PATH
+  # After extraction, locate the binary within INSTALL_DIR and move to BIN_PATH
   if [[ ! -x "$BIN_PATH" ]]; then
     local cand
     cand=$(find "$INSTALL_DIR" -maxdepth 2 -type f \( -name "server" -o -name "network-panel-server" \) | head -n1 || true)
@@ -126,8 +156,7 @@ extract_or_install() {
     log "Server binary not found after extraction."
     return 1
   fi
-
-  # Ensure frontend assets exist; if missing, try to fetch the dist zip from GitHub release
+  # Ensure frontend assets exist; if missing, attempt to download them
   if [[ ! -d "$INSTALL_DIR/public" || -z "$(find "$INSTALL_DIR/public" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
     log "Frontend assets missing, attempting to download ${FRONTEND_ASSET_NAME}..."
     local fzip
@@ -137,11 +166,11 @@ extract_or_install() {
         unzip -qo "$fzip" -d "$INSTALL_DIR/public"
         log "✅ Frontend assets installed to $INSTALL_DIR/public"
       else
-        log "⚠️  'unzip' not found; cannot extract ${FRONTEND_ASSET_NAME}. Please install unzip and re-run."
+        log "⚠️  'unzip' not found; cannot extract ${FRONTEND_ASSET_NAME}. Please install unzip and re‑run."
       fi
     else
       log "⚠️  Failed to download ${FRONTEND_ASSET_NAME}. The web UI may be unavailable."
-      log "   - You can build locally (vite-frontend) and copy dist/* to $INSTALL_DIR/public"
+      log "   - You can build locally (vite‑frontend) and copy dist/* to $INSTALL_DIR/public"
     fi
   fi
 }
@@ -149,13 +178,11 @@ extract_or_install() {
 # Ensure install.sh is available for node bootstrap (served at GET /install.sh)
 install_install_sh() {
   local dst="$INSTALL_DIR/install.sh"
-  # Prefer repo copy if available (running from source tree)
   if [[ -f "$ROOT_DIR/install.sh" ]]; then
     install -m 0755 "$ROOT_DIR/install.sh" "$dst"
     log "✅ install.sh installed to $dst"
     return 0
   fi
-  # Otherwise download from GitHub main branch
   local base="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh"
   if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
   if curl -fSL --retry 3 --retry-delay 1 "$base" -o "$dst"; then
@@ -167,17 +194,46 @@ install_install_sh() {
   return 1
 }
 
+# Helper to read a value from an env file
+read_env_val() {
+  local f="$1"; local k="$2"; local v
+  [[ -f "$f" ]] || { return 1; }
+  v=$(grep -E "^${k}=" "$f" 2>/dev/null | tail -n1 | sed -E "s/^${k}=\"?([^\"]*)\"?.*$/\1/")
+  if [[ -n "$v" ]]; then printf '%s\n' "$v"; return 0; fi
+  return 1
+}
+
+# Clean the installation directory while preserving SQLite DB if configured
+clean_install_dir_preserve_sqlite() {
+  mkdir -p "$INSTALL_DIR"
+  local dialect="" dbpath=""
+  dialect=$(read_env_val "$ENV_FILE" DB_DIALECT || true)
+  if [[ -z "$dialect" ]]; then
+    dialect=$(read_env_val "$DOT_ENV_FILE" DB_DIALECT || true)
+  fi
+  if [[ "$dialect" == "sqlite" ]]; then
+    dbpath=$(read_env_val "$ENV_FILE" DB_SQLITE_PATH || true)
+    if [[ -z "$dbpath" ]]; then
+      dbpath=$(read_env_val "$DOT_ENV_FILE" DB_SQLITE_PATH || true)
+    fi
+    if [[ -z "$dbpath" ]]; then dbpath="${INSTALL_DIR}/panel.db"; fi
+  fi
+  if [[ -n "$dbpath" && -f "$dbpath" ]]; then
+    log "Cleaning $INSTALL_DIR (preserve sqlite DB: $dbpath)"
+    find "$INSTALL_DIR" -mindepth 1 ! -samefile "$dbpath" -exec rm -rf {} + 2>/dev/null || true
+  else
+    log "Cleaning $INSTALL_DIR (no sqlite DB to preserve)"
+    rm -rf "${INSTALL_DIR}/"* 2>/dev/null || true
+  fi
+}
+
+# Install flux-agent binaries for various architectures
 install_flux_agents() {
-  # Ensure a minimal set of flux-agent binaries are available via /flux-agent/:file
-  # Preferred source order: local repo copies -> GitHub Releases (latest)
   local outdir="$INSTALL_DIR/public/flux-agent"
   mkdir -p "$outdir"
-
   local localdir="$ROOT_DIR/golang-backend/public/flux-agent"
   local need=("flux-agent-linux-amd64" "flux-agent-linux-arm64" "flux-agent-linux-armv7")
   local have_any=0
-
-  # 1) Try local copies first
   if [[ -d "$localdir" ]]; then
     for f in "${need[@]}"; do
       if [[ -f "$localdir/$f" ]]; then
@@ -187,10 +243,8 @@ install_flux_agents() {
       fi
     done
   fi
-
-  # Helper to try a URL and report HTTP code
+  # Helper for download with retry
   try_dl() {
-    # try_dl <url> <dest>
     local url="$1"; local dest="$2"; local code
     code=$(curl -fSL --retry 2 --retry-delay 1 --write-out '%{http_code}' --output "$dest" "$url" 2>/dev/null || true)
     if [[ -s "$dest" && ( "$code" == "200" || "$code" == "302" || "$code" == "000" ) ]]; then
@@ -202,8 +256,7 @@ install_flux_agents() {
     printf 'ERR %s\n' "${code:-unknown}"
     return 1
   }
-
-  # 2) Fetch missing from GitHub Releases latest (auto-detect asset names via API) with fallbacks
+  # Download from GitHub if needed
   local api="https://api.github.com/repos/NiuStar/network-panel/releases/latest"
   local dlbase="https://github.com/NiuStar/network-panel/releases/latest/download"
   if [[ -n "$PROXY_PREFIX" ]]; then
@@ -212,13 +265,10 @@ install_flux_agents() {
   fi
   local api_body
   api_body=$(curl -fsSL "$api" || true)
-
   for f in "${need[@]}"; do
     if [[ -f "$outdir/$f" ]]; then continue; fi
     log "Downloading flux-agent: $f"
-    local url1 url2 url3
-    # Try to discover exact asset name from API (no jq dependency)
-    # Grep lines containing browser_download_url and the arch token
+    local token url1 url2 url3
     case "$f" in
       *amd64) token="amd64" ;;
       *arm64) token="arm64" ;;
@@ -228,12 +278,9 @@ install_flux_agents() {
     if [[ -n "$api_body" ]]; then
       url1=$(printf '%s\n' "$api_body" | grep -oE '"browser_download_url"\s*:\s*"[^"]+"' | grep -E "flux-agent.*(linux-($token))" | head -n1 | sed -E 's/.*"(http[^"]+)".*/\1/')
     fi
-    # Fallback to canonical name under releases/download
     url2="${dlbase}/$f"
-    # Final fallback: raw repo path at HEAD
     url3="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/golang-backend/public/flux-agent/$f"
     if [[ -n "$PROXY_PREFIX" ]]; then url3="${PROXY_PREFIX}${url3}"; fi
-
     local dest="$outdir/$f"; local res
     if [[ -n "$url1" ]]; then
       res=$(try_dl "$url1" "$dest") || log "❌ failed $f from $url1 ($(printf '%s' "$res" | awk '{print $2}'))"
@@ -244,7 +291,6 @@ install_flux_agents() {
     res=$(try_dl "$url3" "$dest") || log "❌ failed $f from $url3 ($(printf '%s' "$res" | awk '{print $2}'))"
     if [[ "$res" == OK* ]]; then have_any=1; log "✅ downloaded $f via raw repo"; continue; fi
   done
-
   if (( have_any == 1 )); then
     log "✅ flux-agent binaries ready in $outdir"
   else
@@ -252,25 +298,19 @@ install_flux_agents() {
   fi
 }
 
+# Install easytier config files into INSTALL_DIR/easytier
 install_easytier() {
   log "install_easytier"
-  # 确保下载 easytier 必需的文件到 /easytier/:file 目录
-  # 强制创建目标目录
   local outdir="$INSTALL_DIR/easytier"
-  mkdir -p "$outdir"  # 强制创建目标目录
+  mkdir -p "$outdir"
   log "install_easytier 到 $outdir"
-
-  # 确保目标目录已创建
   if [[ ! -d "$outdir" ]]; then
     log "⚠️ 创建目标目录失败: $outdir"
     return 1
   fi
-
   local localdir="$ROOT_DIR/easytier"
   local need=("default.conf" "install.sh")
   local have_any=0
-
-  # 1) 首先尝试本地复制
   if [[ -d "$localdir" ]]; then
     for f in "${need[@]}"; do
       if [[ -f "$localdir/$f" ]]; then
@@ -282,10 +322,7 @@ install_easytier() {
       fi
     done
   fi
-
-  # 下载文件的辅助函数
   try_dl() {
-    # try_dl <url> <dest>
     local url="$1"; local dest="$2"; local code
     code=$(curl -fSL --retry 2 --retry-delay 1 --write-out '%{http_code}' --output "$dest" "$url" 2>/dev/null || true)
     if [[ -s "$dest" && ( "$code" == "200" || "$code" == "302" || "$code" == "000" ) ]]; then
@@ -297,26 +334,21 @@ install_easytier() {
     printf 'ERR %s\n' "${code:-unknown}"
     return 1
   }
-
-  # 2) 从 GitHub 仓库直接下载文件
   local base_url="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/easytier"
   if [[ -n "$PROXY_PREFIX" ]]; then
     base_url="${PROXY_PREFIX}${base_url}"
   fi
-
   for f in "${need[@]}"; do
     if [[ -f "$outdir/$f" ]]; then continue; fi
     log "下载 easytier: $f"
     local url="${base_url}/${f}"
     local dest="$outdir/$f"
-    
     res=$(try_dl "$url" "$dest") || log "❌ 从 $url 下载失败 ($(printf '%s' "$res" | awk '{print $2}'))"
     if [[ "$res" == OK* ]]; then
       have_any=1
       log "✅ 从 GitHub 仓库下载 $f"
     fi
   done
-
   if (( have_any == 1 )); then
     log "✅ easytier 文件准备就绪，位于 $outdir"
   else
@@ -324,100 +356,7 @@ install_easytier() {
   fi
 }
 
-# --- Clean install dir (preserve SQLite DB only) ---
-read_env_val() {
-  # read_env_val <file> <VAR> -> print last matching value without quotes
-  local f="$1"; local k="$2"; local v
-  [[ -f "$f" ]] || { return 1; }
-  v=$(grep -E "^${k}=" "$f" 2>/dev/null | tail -n1 | sed -E "s/^${k}=\"?([^\"]*)\"?.*$/\1/")
-  if [[ -n "$v" ]]; then printf '%s\n' "$v"; return 0; fi
-  return 1
-}
-
-clean_install_dir_preserve_sqlite() {
-  mkdir -p "$INSTALL_DIR"
-  local dialect="" dbpath=""
-  # Prefer system env file, then local .env
-  dialect=$(read_env_val "$ENV_FILE" DB_DIALECT || true)
-  if [[ -z "$dialect" ]]; then
-    dialect=$(read_env_val "$DOT_ENV_FILE" DB_DIALECT || true)
-  fi
-  if [[ "$dialect" == "sqlite" ]]; then
-    dbpath=$(read_env_val "$ENV_FILE" DB_SQLITE_PATH || true)
-    if [[ -z "$dbpath" ]]; then
-      dbpath=$(read_env_val "$DOT_ENV_FILE" DB_SQLITE_PATH || true)
-    fi
-    # default fallback
-    if [[ -z "$dbpath" ]]; then dbpath="${INSTALL_DIR}/panel.db"; fi
-  fi
-
-  if [[ -n "$dbpath" && -f "$dbpath" ]]; then
-    log "Cleaning $INSTALL_DIR (preserve sqlite DB: $dbpath)"
-    # Delete everything except the DB file
-    # Use samefile to exclude exact file
-    find "$INSTALL_DIR" -mindepth 1 ! -samefile "$dbpath" -exec rm -rf {} + 2>/dev/null || true
-  else
-    log "Cleaning $INSTALL_DIR (no sqlite DB to preserve)"
-    rm -rf "${INSTALL_DIR}/"* 2>/dev/null || true
-  fi
-}
-
-build_from_source() {
-  if ! command -v go >/dev/null 2>&1; then
-    log "Go toolchain not installed; cannot build from source."
-    return 1
-  fi
-
-  local ldflags=("-s" "-w")
-  if git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-    local ver
-    ver=$(git -C "$ROOT_DIR" describe --tags --always 2>/dev/null || true)
-    if [[ -n "$ver" ]]; then
-      ldflags+=("-X" "main.version=$ver")
-    fi
-  fi
-
-  env CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "${ldflags[*]}" -o "$BIN_PATH" "$MAIN_PKG"
-  [[ -x "$BIN_PATH" ]]
-
-  # Try to build/copy frontend assets for the web UI
-  mkdir -p "$INSTALL_DIR"
-  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-    log "Building frontend assets..."
-    (
-      set -e
-      cd "$ROOT_DIR/vite-frontend"
-      npm install --legacy-peer-deps --no-audit --no-fund
-      npm run build
-    )
-    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
-      rm -rf "$INSTALL_DIR/public"
-      mkdir -p "$INSTALL_DIR/public"
-      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
-      log "✅ Frontend assets installed to $INSTALL_DIR/public"
-    else
-      log "⚠️  Frontend build did not produce dist/; UI may be unavailable"
-    fi
-  else
-    # Fallback: copy existing dist if present
-    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
-      rm -rf "$INSTALL_DIR/public"
-      mkdir -p "$INSTALL_DIR/public"
-      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
-      log "✅ Frontend assets installed to $INSTALL_DIR/public"
-    else
-      log "⚠️  'node' or 'npm' not found; skipping frontend build."
-      log "   - The API will run, but the web UI requires assets in $INSTALL_DIR/public"
-      log "   - Use Docker image or prebuilt release tarball for a ready UI."
-    fi
-  fi
-  # Always install install.sh alongside WorkingDirectory for /install.sh serving
-  install_install_sh || true
-  # Provide flux-agent binaries for node auto-upgrade/download
-  install_flux_agents || true
-  install_easytier || true
-}
-
+# Write a default environment file if it does not exist
 write_env_file() {
   if [[ -f "$ENV_FILE" ]]; then return 0; fi
   log "Writing $ENV_FILE"
@@ -429,7 +368,7 @@ PORT=6365
 # Default to SQLite for simpler out-of-the-box usage. To switch to MySQL,
 # clear DB_DIALECT and set DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD.
 DB_DIALECT=sqlite
-DB_SQLITE_PATH=/opt/network-panel/panel.db
+DB_SQLITE_PATH=${INSTALL_DIR}/panel.db
 # MySQL settings (used only if DB_DIALECT is empty)
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -441,6 +380,7 @@ JWT_SECRET=flux-panel-secret
 EOF
 }
 
+# Write the systemd service file
 write_service() {
   cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -465,39 +405,127 @@ EOF
   systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
-main() {
-  log "Optional: set a proxy prefix for GitHub downloads (empty to skip)"
-  read -rp "Proxy prefix (e.g. https://ghfast.top/): " PROXY_PREFIX
-
-  local arch
-  arch=$(prompt_arch)
-
+# Build the server from source if no prebuilt binary is available
+build_from_source() {
+  if ! command -v go >/dev/null 2>&1; then
+    log "Go toolchain not installed; cannot build from source."
+    return 1
+  fi
+  local ldflags=("-s" "-w")
+  if git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    local ver
+    ver=$(git -C "$ROOT_DIR" describe --tags --always 2>/dev/null || true)
+    if [[ -n "$ver" ]]; then
+      ldflags+=("-X" "main.version=$ver")
+    fi
+  fi
+  env CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "${ldflags[*]}" -o "$BIN_PATH" "$MAIN_PKG"
+  [[ -x "$BIN_PATH" ]] || return 1
   mkdir -p "$INSTALL_DIR"
-  # Clean install dir before re-install (preserve sqlite DB if configured)
-  clean_install_dir_preserve_sqlite
+  # Attempt to build/copy frontend assets
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    log "Building frontend assets..."
+    (
+      set -e
+      cd "$ROOT_DIR/vite-frontend"
+      npm install --legacy-peer-deps --no-audit --no-fund
+      npm run build
+    )
+    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
+      rm -rf "$INSTALL_DIR/public"
+      mkdir -p "$INSTALL_DIR/public"
+      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
+      log "✅ Frontend assets installed to $INSTALL_DIR/public"
+    else
+      log "⚠️  Frontend build did not produce dist/; UI may be unavailable"
+    fi
+  else
+    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
+      rm -rf "$INSTALL_DIR/public"
+      mkdir -p "$INSTALL_DIR/public"
+      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
+      log "✅ Frontend assets installed to $INSTALL_DIR/public"
+    else
+      log "⚠️  'node' or 'npm' not found; skipping frontend build."
+      log "   - The API will run, but the web UI requires assets in $INSTALL_DIR/public"
+      log "   - Use Docker image or prebuilt release tarball for a ready UI."
+    fi
+  fi
+  install_install_sh || true
+  install_flux_agents || true
+  install_easytier || true
+}
 
+# Remove service and installation directories
+uninstall() {
+  log "Uninstalling $SERVICE_NAME..."
+  systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  rm -rf "$INSTALL_DIR"
+  rm -f "$SERVICE_FILE"
+  rm -f "$ENV_FILE"
+  rm -f "$DOT_ENV_FILE"
+  rm -f "$BIN_PATH"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  log "Uninstallation complete."
+}
+
+# Update the installation by uninstalling then reinstalling with preserved config
+update() {
+  # Update the service while preserving the existing SQLite database and configuration.
+  # Do not uninstall completely; instead stop the service and perform a normal install.
+  log "Updating $SERVICE_NAME..."
+  # Stop the running service but do not remove installation files; this preserves the existing DB.
+  systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  # Call main without subcommand.  main() will reuse the saved configuration, clean
+  # the install directory (preserving SQLite DB) and reinstall the binary and assets.
+  main
+}
+
+# Main entry point for install / uninstall / update
+main() {
+  # Handle subcommands first
+  if [[ "${1:-}" == "uninstall" ]]; then
+    uninstall
+    return 0
+  fi
+  if [[ "${1:-}" == "update" ]]; then
+    update
+    return 0
+  fi
+  # Load existing configuration (if any)
+  read_config
+  # Prompt for proxy prefix only if the variable has not been defined previously.
+  # If PROXY_PREFIX is defined (even as an empty string) in the config file, do not prompt again.
+  if ! [[ -v PROXY_PREFIX ]]; then
+    log "Optional: set a proxy prefix for GitHub downloads (empty to skip)"
+    read -rp "Proxy prefix (e.g. https://ghfast.top/): " PROXY_PREFIX
+  fi
+  # Prompt for architecture only if the variable has not been defined previously.
+  if ! [[ -v ARCH ]]; then
+    ARCH=$(prompt_arch)
+  fi
+  local arch="$ARCH"
+  # Ensure installation directory exists and preserve sqlite DB if needed
+  mkdir -p "$INSTALL_DIR"
+  clean_install_dir_preserve_sqlite
   log "Downloading prebuilt server binary..."
   local file
   if file=$(download_prebuilt "$arch"); then
-     extract_or_install "$file" || exit 1
+    extract_or_install "$file" || exit 1
   else
-     log "Download failed; trying to build from source..."
-     build_from_source || { log "Build failed"; exit 1; }
+    log "Download failed; trying to build from source..."
+    build_from_source || { log "Build failed"; exit 1; }
   fi
-
-  # Ensure install.sh present for node bootstrap
   install_install_sh || true
-  # Ensure flux-agent binaries are available
   install_flux_agents || true
   install_easytier || true
-
   write_env_file
-  # Also create a project-local .env with sane defaults
   if [[ ! -f "$DOT_ENV_FILE" ]]; then
     cat > "$DOT_ENV_FILE" <<EOF
 PORT=6365
 DB_DIALECT=sqlite
-DB_SQLITE_PATH=/opt/network-panel/panel.db
+DB_SQLITE_PATH=${INSTALL_DIR}/panel.db
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=flux_panel
@@ -510,6 +538,9 @@ EOF
   systemctl restart "$SERVICE_NAME"
   systemctl status --no-pager "$SERVICE_NAME" || true
   printf '\n✅ Installed. Configure env in %s and restart via: systemctl restart %s\n' "$ENV_FILE" "$SERVICE_NAME"
+  # Save current configuration for future runs
+  save_config
 }
 
+# Invoke main with provided arguments
 main "$@"
