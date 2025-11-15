@@ -1,12 +1,13 @@
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Modal, ModalContent, ModalHeader, ModalBody } from "@heroui/modal";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import toast from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 
 import { getUserPackageInfo, getRecentAlerts, getForwardList } from "@/api";
+import { getCachedConfig } from "@/config/site";
 
 interface UserInfo {
   flow: number;
@@ -68,6 +69,38 @@ export default function DashboardPage() {
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const [addressModalTitle, setAddressModalTitle] = useState('');
   const [addressList, setAddressList] = useState<AddressItem[]>([]);
+
+  // 24h 流量图数据（保持窗口并滚动更新，避免整图重绘）
+  const [chartData, setChartData] = useState<Array<{ time: string; flow: number }>>([]);
+  const rafRef = useRef<number | null>(null);
+  const animFromRef = useRef<Map<string, number>>(new Map());
+  const animToRef = useRef<Map<string, number>>(new Map());
+  const animStartRef = useRef<number>(0);
+  const animDurRef = useRef<number>(800); // 动画时长(ms)
+
+  // 计算总流量：
+  // - 双向隧道：sum(inFlow + outFlow)
+  // - 单向隧道：sum(max(inFlow, outFlow))
+  const computeTotalFlowBytes = () => {
+    const tfMap = new Map<number, number>();
+    userTunnels.forEach(t => tfMap.set(t.tunnelId, t.tunnelFlow || 2));
+    let sum = 0;
+    forwardList.forEach(f => {
+      const tf = tfMap.get(f.tunnelId) || 2;
+      const inB = Number(f.inFlow || 0);
+      const outB = Number(f.outFlow || 0);
+      if (tf === 1) sum += Math.max(inB, outB); else sum += (inB + outB);
+    });
+    return sum;
+  };
+  const totalFlowBytes = computeTotalFlowBytes();
+  const totalFlowText = (() => {
+    const v = totalFlowBytes;
+    if (v < 1024) return v + ' B';
+    if (v < 1024*1024) return (v/1024).toFixed(2) + ' KB';
+    if (v < 1024*1024*1024) return (v/(1024*1024)).toFixed(2) + ' MB';
+    return (v/(1024*1024*1024)).toFixed(2) + ' GB';
+  })();
 
   // 检查有效期通知
   const checkExpirationNotifications = (userInfo: UserInfo, tunnels: UserTunnel[]) => {
@@ -173,11 +206,14 @@ export default function DashboardPage() {
     
     loadPackageData();
     // 加载最近告警（管理员可见）
-    getRecentAlerts(20).then((res:any)=>{ if (res.code===0) setAlerts(res.data||[]); }).catch(()=>{});
-    localStorage.setItem('e', '/dashboard');
-  }, []);
+        getRecentAlerts(20).then((res:any)=>{ if (res.code===0) setAlerts(res.data||[]); }).catch(()=>{});
+        localStorage.setItem('e', '/dashboard');
+      }, []);
 
   // 轮询刷新 forwardList 的进/出流量（每 5s）
+  const [pollMs, setPollMs] = useState<number>(3000);
+  useEffect(() => { (async()=>{ try{ const v = await getCachedConfig('poll_interval_sec'); const n = Math.max(1, parseInt(String(v||'3'),10)); setPollMs(n*1000);}catch{}})(); }, []);
+
   useEffect(() => {
     let timer: any;
     const tick = async () => {
@@ -202,9 +238,29 @@ export default function DashboardPage() {
       }
     };
     tick();
-    timer = setInterval(tick, 5000);
+    timer = setInterval(tick, pollMs);
     return () => { if (timer) clearInterval(timer); };
-  }, []);
+  }, [pollMs]);
+
+  // 轮询刷新用户包信息（含 24 小时统计表）
+  useEffect(() => {
+    let timer: any;
+    const tick = async () => {
+      try {
+        const res = await getUserPackageInfo();
+        if (res && (res as any).code === 0) {
+          const data:any = (res as any).data || {};
+          setUserInfo(data.userInfo || {});
+          setUserTunnels(data.tunnelPermissions || []);
+          setForwardList(prev => prev.length>0 ? prev : (data.forwards || []));
+          setStatisticsFlows(data.statisticsFlows || []);
+        }
+      } catch {}
+    };
+    tick();
+    timer = setInterval(tick, pollMs);
+    return () => { if (timer) clearInterval(timer); };
+  }, [pollMs]);
 
   const loadPackageData = async () => {
     setLoading(true);
@@ -255,31 +311,67 @@ export default function DashboardPage() {
     return value.toString();
   };
 
-  // 处理24小时流量统计数据
-  const processFlowChartData = () => {
-    // 生成最近24小时的时间数组（从当前小时往前推24小时）
-    const now = new Date();
+  // 顶部展示总流量（根据单/双向规则）
+  // 可在合适位置渲染：
+
+  // 生成最近24小时标签
+  const makeHourLabels = () => {
+    // 以东八区时间为基准生成最近24小时标签
+    const nowLocal = new Date();
+    const utcMs = nowLocal.getTime() + nowLocal.getTimezoneOffset() * 60000;
+    const nowCST = new Date(utcMs + 8 * 3600000);
     const hours: string[] = [];
     for (let i = 23; i >= 0; i--) {
-      const time = new Date(now.getTime() - i * 60 * 60 * 1000);
-      const hourString = time.getHours().toString().padStart(2, '0') + ':00';
-      hours.push(hourString);
+      const t = new Date(nowCST.getTime() - i * 60 * 60 * 1000);
+      hours.push(t.getHours().toString().padStart(2, '0') + ':00');
     }
+    return hours;
+  };
 
-    // 创建数据映射
+  // 根据 statisticsFlows 合并更新 chartData，保持时间轴滚动 + 当前刻点平滑过渡
+  useEffect(() => {
+    const labels = makeHourLabels();
     const flowMap = new Map<string, number>();
-    statisticsFlows.forEach(item => {
-      flowMap.set(item.time, item.flow || 0);
+    statisticsFlows.forEach(it => { flowMap.set(it.time, it.flow || 0); });
+
+    const prevMap = new Map<string, number>();
+    chartData.forEach(d => { prevMap.set(d.time, d.flow); });
+
+    const targetArr = labels.map(l => ({ time: l, flow: flowMap.has(l) ? (flowMap.get(l) || 0) : (prevMap.get(l) || 0) }));
+    const fromMap = new Map<string, number>();
+    const toMap = new Map<string, number>();
+    targetArr.forEach(d => {
+      fromMap.set(d.time, prevMap.has(d.time) ? (prevMap.get(d.time) || 0) : 0);
+      toMap.set(d.time, d.flow);
     });
 
-    // 生成图表数据，没有数据的小时显示为0
-    return hours.map(hour => ({
-      time: hour,
-      flow: flowMap.get(hour) || 0,
-      // 格式化显示用的流量值
-      formattedFlow: formatFlow(flowMap.get(hour) || 0)
-    }));
-  };
+    animFromRef.current = fromMap;
+    animToRef.current = toMap;
+    animStartRef.current = performance.now();
+
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+    const step = (now: number) => {
+      const elapsed = now - animStartRef.current;
+      const dur = animDurRef.current;
+      let t = elapsed / dur; if (t < 0) t = 0; if (t > 1) t = 1;
+      const e = easeOutCubic(t);
+      const cur = labels.map(l => {
+        const a = animFromRef.current.get(l) || 0;
+        const b = animToRef.current.get(l) || 0;
+        const v = a + (b - a) * e;
+        return { time: l, flow: v };
+      });
+      setChartData(cur);
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(step);
+      } else {
+        rafRef.current = null;
+      }
+    };
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(step);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [statisticsFlows]);
 
 
   const getExpStatus = (expTime?: string) => {
@@ -635,7 +727,8 @@ export default function DashboardPage() {
                      </svg>
                    </div>
                  </div>
-                 <p className="text-base lg:text-xl font-bold text-foreground truncate">{formatFlow(userInfo.flow, 'gb')}</p>
+                 {/* 显示基于前端汇总规则的总流量 */}
+                 <p className="text-base lg:text-xl font-bold text-foreground truncate">{totalFlowText}</p>
                </div>
            </CardBody>
           </Card>
@@ -759,7 +852,7 @@ export default function DashboardPage() {
                                     {/* 流量趋势图 */}
                    <div className="h-64 lg:h-80 w-full">
                      <ResponsiveContainer width="100%" height="100%">
-                       <LineChart data={processFlowChartData()}>
+                       <LineChart data={chartData} margin={{ top: 4, right: 12, bottom: 0, left: 8 }}>
                          <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                          <XAxis 
                            dataKey="time" 
@@ -800,6 +893,7 @@ export default function DashboardPage() {
                            stroke="#8b5cf6"
                            strokeWidth={3}
                            dot={false}
+                           isAnimationActive={false}
                            activeDot={{ r: 4, stroke: '#8b5cf6', strokeWidth: 2, fill: '#fff' }}
                          />
                        </LineChart>

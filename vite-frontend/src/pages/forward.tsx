@@ -53,6 +53,7 @@ import {
   getTunnelList,
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
+import { getCachedConfig } from "@/config/site";
 
 interface Forward {
   id: number;
@@ -230,7 +231,20 @@ export default function ForwardPage() {
 
   useEffect(() => { loadData(); }, []);
 
-  // 轮询刷新每条转发的进/出流量（每 5s）
+  // 从网站配置读取轮询间隔（默认 3s）
+  const [pollMs, setPollMs] = useState<number>(3000);
+  useEffect(() => {
+    (async () => {
+      try {
+        // 支持秒为单位的配置项：poll_interval_sec
+        const v = await getCachedConfig('poll_interval_sec');
+        const n = Math.max(1, parseInt(String(v || '3'), 10));
+        setPollMs(n * 1000);
+      } catch {}
+    })();
+  }, []);
+
+  // 轮询刷新每条转发的进/出流量
   useEffect(() => {
     let timer: any;
     const tick = async () => {
@@ -254,11 +268,11 @@ export default function ForwardPage() {
         // 忽略错误，下一次轮询继续
       }
     };
-    // 立即跑一次，随后每 5s 轮询
+    // 立即跑一次，随后按配置轮询
     tick();
-    timer = setInterval(tick, 5000);
+    timer = setInterval(tick, pollMs);
     return () => { if (timer) clearInterval(timer); };
-  }, []);
+  }, [pollMs]);
   
   function ForwardIfacePicker({ selectedTunnel, onSelect, active }: { selectedTunnel: Tunnel | null; onSelect:(ip:string)=>void; active:boolean }){
     const [ips, setIps] = useState<string[]>([]);
